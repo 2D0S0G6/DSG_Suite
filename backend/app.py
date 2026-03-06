@@ -13,7 +13,6 @@ def home():
     })
 
 
-# Scan endpoint
 @app.route("/scan", methods=["POST"])
 def scan():
     data = request.get_json()

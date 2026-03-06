@@ -1,6 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
+from payload_tester import test_xss, test_sql
 
 SECURITY_HEADERS = [
     "Content-Security-Policy",
@@ -13,6 +14,7 @@ SECURITY_HEADERS = [
 
 def crawl_links(url):
     links = set()
+
     try:
         response = requests.get(url, timeout=5)
         soup = BeautifulSoup(response.text, "html.parser")
@@ -28,17 +30,39 @@ def crawl_links(url):
 
 
 def check_security_headers(headers):
+
     missing = []
-    for h in SECURITY_HEADERS:
-        if h not in headers:
-            missing.append(h)
+
+    for header in SECURITY_HEADERS:
+        if header not in headers:
+            missing.append(header)
+
     return missing
 
 
+def detect_parameters(url):
+
+    if "?" not in url:
+        return []
+
+    base, params = url.split("?", 1)
+    param_list = params.split("&")
+
+    parameters = []
+
+    for p in param_list:
+        key = p.split("=")[0]
+        parameters.append(key)
+
+    return parameters
+
+
 def scan_url(url):
+
     result = {}
 
     try:
+
         response = requests.get(url, timeout=5)
 
         result["url"] = url
@@ -50,72 +74,25 @@ def scan_url(url):
         # Security headers
         result["missing_security_headers"] = check_security_headers(response.headers)
 
-        # Crawling
+        # Crawl links
         links = crawl_links(url)
         result["links_found"] = links
 
-        # Parameter detection
-        params = detect_parameters(url)
-        result["parameters"] = params
+        # Detect parameters
+        parameters = detect_parameters(url)
+        result["parameters"] = parameters
 
-        # Vulnerability checks
-        result["sql_injection_possible"] = test_sqli(url)
-        result["xss_possible"] = test_xss(url)
+        # Payload testing
+        xss_results = test_xss(url, parameters)
+        sql_results = test_sql(url, parameters)
+
+        result["xss_vulnerabilities"] = xss_results
+        result["sql_vulnerabilities"] = sql_results
 
     except Exception as e:
+
         result["url"] = url
         result["reachable"] = False
         result["error"] = str(e)
 
     return result
-
-def detect_parameters(url):
-    if "?" not in url:
-        return []
-
-    base, params = url.split("?", 1)
-    param_list = params.split("&")
-
-    parameters = []
-    for p in param_list:
-        key = p.split("=")[0]
-        parameters.append(key)
-
-    return parameters
-
-
-def test_sqli(url):
-    try:
-        test_url = url + SQL_PAYLOAD
-        r = requests.get(test_url, timeout=5)
-
-        sql_errors = [
-            "sql syntax",
-            "mysql",
-            "syntax error",
-            "sqlite",
-            "postgresql"
-        ]
-
-        for error in sql_errors:
-            if error in r.text.lower():
-                return True
-
-    except:
-        pass
-
-    return False
-
-
-def test_xss(url):
-    try:
-        test_url = url + XSS_PAYLOAD
-        r = requests.get(test_url, timeout=5)
-
-        if XSS_PAYLOAD in r.text:
-            return True
-
-    except:
-        pass
-
-    return False
