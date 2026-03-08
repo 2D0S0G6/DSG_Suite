@@ -2,6 +2,7 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from payload_tester import test_xss, test_sql
+from form_scanner import scan_forms
 
 SECURITY_HEADERS = [
     "Content-Security-Policy",
@@ -10,6 +11,8 @@ SECURITY_HEADERS = [
     "X-Content-Type-Options",
     "Strict-Transport-Security"
 ]
+
+MAX_LINKS = 20
 
 
 def crawl_links(url):
@@ -20,8 +23,17 @@ def crawl_links(url):
         soup = BeautifulSoup(response.text, "html.parser")
 
         for tag in soup.find_all("a", href=True):
-            full_url = urljoin(url, tag["href"])
-            links.add(full_url)
+
+            href = tag["href"]
+
+            # Skip unwanted links
+            if href.startswith("#") or href.startswith("mailto:") or href.startswith("javascript:"):
+                continue
+
+            full_url = urljoin(url, href)
+
+            if full_url.startswith("http"):
+                links.add(full_url)
 
     except Exception as e:
         print("Crawl error:", e)
@@ -45,16 +57,20 @@ def detect_parameters(url):
     if "?" not in url:
         return []
 
-    base, params = url.split("?", 1)
-    param_list = params.split("&")
+    try:
+        params = url.split("?", 1)[1]
+        param_list = params.split("&")
 
-    parameters = []
+        parameters = []
 
-    for p in param_list:
-        key = p.split("=")[0]
-        parameters.append(key)
+        for p in param_list:
+            key = p.split("=")[0]
+            parameters.append(key)
 
-    return parameters
+        return parameters
+
+    except:
+        return []
 
 
 def scan_url(url):
@@ -76,18 +92,38 @@ def scan_url(url):
 
         # Crawl links
         links = crawl_links(url)
-        result["links_found"] = links
+        result["links_found"] = links[:MAX_LINKS]
 
-        # Detect parameters
-        parameters = detect_parameters(url)
-        result["parameters"] = parameters
+        # Form scanning
+        form_results = scan_forms(url)
+        result["form_vulnerabilities"] = form_results
 
-        # Payload testing
-        xss_results = test_xss(url, parameters)
-        sql_results = test_sql(url, parameters)
+        # Detect parameters in main URL
+        main_params = detect_parameters(url)
+        result["parameters"] = main_params
 
-        result["xss_vulnerabilities"] = xss_results
-        result["sql_vulnerabilities"] = sql_results
+        all_xss = set()
+        all_sql = set()
+
+        # Scan main URL
+        if main_params:
+            all_xss.update(test_xss(url, main_params))
+            all_sql.update(test_sql(url, main_params))
+
+        # Scan crawled links
+        for link in links[:MAX_LINKS]:
+
+            params = detect_parameters(link)
+
+            if params:
+                xss_results = test_xss(link, params)
+                sql_results = test_sql(link, params)
+
+                all_xss.update(xss_results)
+                all_sql.update(sql_results)
+
+        result["xss_vulnerabilities"] = list(all_xss)
+        result["sql_vulnerabilities"] = list(all_sql)
 
     except Exception as e:
 
