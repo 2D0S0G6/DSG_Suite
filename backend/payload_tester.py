@@ -1,43 +1,63 @@
 import requests
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
-from payloads import XSS_PAYLOADS, SQL_PAYLOADS
 
 
-def inject_payload(url, param, payload):
-    
-    parsed = urlparse(url)
-    query = parse_qs(parsed.query)
-
-    query[param] = payload
-
-    new_query = urlencode(query, doseq=True)
-
-    new_url = urlunparse((
-        parsed.scheme,
-        parsed.netloc,
-        parsed.path,
-        parsed.params,
-        new_query,
-        parsed.fragment
-    ))
-
-    return new_url
+# -------------------------
+# XSS Payloads
+# -------------------------
+XSS_PAYLOADS = [
+    "<script>alert(1)</script>",
+    "\"><script>alert(1)</script>",
+    "<img src=x onerror=alert(1)>"
+]
 
 
+# -------------------------
+# SQL Payloads
+# -------------------------
+SQL_PAYLOADS = [
+    "'",
+    "' OR '1'='1",
+    "' OR 1=1--",
+    "\" OR \"1\"=\"1",
+    "' UNION SELECT NULL--"
+]
+
+
+# SQL Error Signatures
+SQL_ERRORS = [
+    "SQL syntax",
+    "mysql_fetch",
+    "ORA-01756",
+    "syntax error",
+    "Unclosed quotation mark",
+    "SQLite error",
+    "Warning: mysql",
+    "PostgreSQL"
+]
+
+
+# -------------------------
+# XSS Testing
+# -------------------------
 def test_xss(url, parameters):
 
-    results = []
+    vulnerabilities = []
 
     for param in parameters:
+
         for payload in XSS_PAYLOADS:
 
-            test_url = inject_payload(url, param, payload)
-
             try:
-                r = requests.get(test_url, timeout=5)
 
-                if payload in r.text:
-                    results.append({
+                test_url = f"{url}&{param}={payload}"
+
+                response = requests.get(test_url, timeout=5)
+
+                # Reflected payload detection
+                if payload in response.text:
+
+                    vulnerabilities.append({
+                        "type": "Reflected XSS",
                         "parameter": param,
                         "payload": payload,
                         "url": test_url
@@ -46,40 +66,41 @@ def test_xss(url, parameters):
             except:
                 pass
 
-    return results
+    return vulnerabilities
 
 
+# -------------------------
+# SQL Injection Testing
+# -------------------------
 def test_sql(url, parameters):
 
-    results = []
+    vulnerabilities = []
 
     for param in parameters:
+
         for payload in SQL_PAYLOADS:
 
-            test_url = inject_payload(url, param, payload)
-
             try:
-                r = requests.get(test_url, timeout=5)
 
-                errors = [
-                    "sql syntax",
-                    "mysql",
-                    "warning",
-                    "odbc",
-                    "pdo",
-                    "sql error"
-                ]
+                test_url = f"{url}&{param}={payload}"
 
-                for e in errors:
-                    if e.lower() in r.text.lower():
-                        results.append({
+                response = requests.get(test_url, timeout=5)
+
+                for error in SQL_ERRORS:
+
+                    if error.lower() in response.text.lower():
+
+                        vulnerabilities.append({
+                            "type": "SQL Injection",
                             "parameter": param,
                             "payload": payload,
-                            "url": test_url
+                            "url": test_url,
+                            "evidence": error
                         })
+
                         break
 
             except:
                 pass
 
-    return results
+    return vulnerabilities

@@ -1,8 +1,11 @@
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
+from concurrent.futures import ThreadPoolExecutor
+
 from payload_tester import test_xss, test_sql
 from form_scanner import scan_forms
+
 
 SECURITY_HEADERS = [
     "Content-Security-Policy",
@@ -12,10 +15,12 @@ SECURITY_HEADERS = [
     "Strict-Transport-Security"
 ]
 
-MAX_LINKS = 20
 
-
+# -----------------------------
+# Crawl links
+# -----------------------------
 def crawl_links(url):
+
     links = set()
 
     try:
@@ -23,17 +28,8 @@ def crawl_links(url):
         soup = BeautifulSoup(response.text, "html.parser")
 
         for tag in soup.find_all("a", href=True):
-
-            href = tag["href"]
-
-            # Skip unwanted links
-            if href.startswith("#") or href.startswith("mailto:") or href.startswith("javascript:"):
-                continue
-
-            full_url = urljoin(url, href)
-
-            if full_url.startswith("http"):
-                links.add(full_url)
+            full_url = urljoin(url, tag["href"])
+            links.add(full_url)
 
     except Exception as e:
         print("Crawl error:", e)
@@ -41,6 +37,9 @@ def crawl_links(url):
     return list(links)
 
 
+# -----------------------------
+# Check security headers
+# -----------------------------
 def check_security_headers(headers):
 
     missing = []
@@ -52,27 +51,52 @@ def check_security_headers(headers):
     return missing
 
 
+# -----------------------------
+# Detect parameters
+# -----------------------------
 def detect_parameters(url):
 
     if "?" not in url:
         return []
 
-    try:
-        params = url.split("?", 1)[1]
-        param_list = params.split("&")
+    params_part = url.split("?", 1)[1]
+    param_list = params_part.split("&")
 
-        parameters = []
+    parameters = []
 
-        for p in param_list:
-            key = p.split("=")[0]
-            parameters.append(key)
+    for p in param_list:
+        key = p.split("=")[0]
+        parameters.append(key)
 
-        return parameters
-
-    except:
-        return []
+    return parameters
 
 
+# -----------------------------
+# Scan a single link
+# -----------------------------
+def scan_link(link):
+
+    results = {
+        "xss": [],
+        "sql": []
+    }
+
+    params = detect_parameters(link)
+
+    if params:
+
+        xss_results = test_xss(link, params)
+        sql_results = test_sql(link, params)
+
+        results["xss"].extend(xss_results)
+        results["sql"].extend(sql_results)
+
+    return results
+
+
+# -----------------------------
+# Main scan function
+# -----------------------------
 def scan_url(url):
 
     result = {}
@@ -92,38 +116,37 @@ def scan_url(url):
 
         # Crawl links
         links = crawl_links(url)
-        result["links_found"] = links[:MAX_LINKS]
+        result["links_found"] = links
 
-        # Form scanning
-        form_results = scan_forms(url)
-        result["form_vulnerabilities"] = form_results
+        # Scan forms
+        result["form_vulnerabilities"] = scan_forms(url)
 
-        # Detect parameters in main URL
-        main_params = detect_parameters(url)
-        result["parameters"] = main_params
-
-        all_xss = set()
-        all_sql = set()
+        all_xss = []
+        all_sql = []
 
         # Scan main URL
+        main_params = detect_parameters(url)
+
         if main_params:
-            all_xss.update(test_xss(url, main_params))
-            all_sql.update(test_sql(url, main_params))
+            all_xss.extend(test_xss(url, main_params))
+            all_sql.extend(test_sql(url, main_params))
 
-        # Scan crawled links
-        for link in links[:MAX_LINKS]:
+        # -----------------------------
+        # THREADING STARTS HERE
+        # -----------------------------
+        with ThreadPoolExecutor(max_workers=5) as executor:
 
-            params = detect_parameters(link)
+            futures = [executor.submit(scan_link, link) for link in links]
 
-            if params:
-                xss_results = test_xss(link, params)
-                sql_results = test_sql(link, params)
+            for future in futures:
 
-                all_xss.update(xss_results)
-                all_sql.update(sql_results)
+                data = future.result()
 
-        result["xss_vulnerabilities"] = list(all_xss)
-        result["sql_vulnerabilities"] = list(all_sql)
+                all_xss.extend(data["xss"])
+                all_sql.extend(data["sql"])
+
+        result["xss_vulnerabilities"] = all_xss
+        result["sql_vulnerabilities"] = all_sql
 
     except Exception as e:
 
