@@ -1,6 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from concurrent.futures import ThreadPoolExecutor
 
 from payload_tester import test_xss, test_sql
@@ -15,6 +15,19 @@ SECURITY_HEADERS = [
     "Strict-Transport-Security"
 ]
 
+MAX_LINKS = 20
+
+
+# -----------------------------
+# Domain filter
+# -----------------------------
+def is_same_domain(base_url, target_url):
+
+    base_domain = urlparse(base_url).netloc
+    target_domain = urlparse(target_url).netloc
+
+    return base_domain == target_domain
+
 
 # -----------------------------
 # Crawl links
@@ -28,8 +41,22 @@ def crawl_links(url):
         soup = BeautifulSoup(response.text, "html.parser")
 
         for tag in soup.find_all("a", href=True):
-            full_url = urljoin(url, tag["href"])
-            links.add(full_url)
+
+            href = tag["href"]
+
+            if href.startswith("#") or href.startswith("mailto:") or href.startswith("javascript:"):
+                continue
+
+            full_url = urljoin(url, href)
+
+            if not full_url.startswith("http"):
+                continue
+
+            if is_same_domain(url, full_url):
+                links.add(full_url)
+
+            if len(links) >= MAX_LINKS:
+                break
 
     except Exception as e:
         print("Crawl error:", e)
@@ -59,20 +86,24 @@ def detect_parameters(url):
     if "?" not in url:
         return []
 
-    params_part = url.split("?", 1)[1]
-    param_list = params_part.split("&")
+    try:
+        params_part = url.split("?", 1)[1]
+        param_list = params_part.split("&")
 
-    parameters = []
+        parameters = []
 
-    for p in param_list:
-        key = p.split("=")[0]
-        parameters.append(key)
+        for p in param_list:
+            key = p.split("=")[0]
+            parameters.append(key)
 
-    return parameters
+        return parameters
+
+    except:
+        return []
 
 
 # -----------------------------
-# Scan a single link
+# Scan single link
 # -----------------------------
 def scan_link(link):
 
@@ -118,22 +149,20 @@ def scan_url(url):
         links = crawl_links(url)
         result["links_found"] = links
 
-        # Scan forms
+        # Form scan
         result["form_vulnerabilities"] = scan_forms(url)
 
         all_xss = []
         all_sql = []
 
-        # Scan main URL
+        # Scan main URL parameters
         main_params = detect_parameters(url)
 
         if main_params:
             all_xss.extend(test_xss(url, main_params))
             all_sql.extend(test_sql(url, main_params))
 
-        # -----------------------------
-        # THREADING STARTS HERE
-        # -----------------------------
+        # Threaded link scanning
         with ThreadPoolExecutor(max_workers=5) as executor:
 
             futures = [executor.submit(scan_link, link) for link in links]

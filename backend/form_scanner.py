@@ -3,7 +3,6 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from payload_tester import test_xss, test_sql
 
-
 def get_forms(url):
     try:
         response = requests.get(url, timeout=5)
@@ -11,6 +10,7 @@ def get_forms(url):
         return soup.find_all("form")
     except:
         return []
+
 
 
 def form_details(form):
