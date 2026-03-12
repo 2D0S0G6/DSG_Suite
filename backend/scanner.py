@@ -5,8 +5,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 from payload_tester import test_xss, test_sql
 from form_scanner import scan_forms
+from param_wordlist import COMMON_PARAMETERS
 
-
+session = requests.Session()
+MAX_DEPTH = 2
+HEADERS = {
+    "User-Agent": "DSG-Scanner/1.0"
+}
 SECURITY_HEADERS = [
     "Content-Security-Policy",
     "X-Frame-Options",
@@ -16,6 +21,10 @@ SECURITY_HEADERS = [
 ]
 
 MAX_LINKS = 20
+
+HEADERS = {
+    "User-Agent": "DSG-Scanner/1.0"
+}
 
 
 # -----------------------------
@@ -30,38 +39,82 @@ def is_same_domain(base_url, target_url):
 
 
 # -----------------------------
+# Parameter fuzzing
+# -----------------------------
+def fuzz_parameters(url):
+
+    discovered = []
+
+    for param in COMMON_PARAMETERS:
+
+        test_url = f"{url}?{param}=1"
+
+        try:
+            r = session.get(test_url, headers=HEADERS, timeout=5)
+
+            if r.status_code == 200 and len(r.text) > 100:
+                discovered.append((param, test_url))
+
+        except:
+            pass
+
+    return discovered
+
+
+# -----------------------------
 # Crawl links
 # -----------------------------
-def crawl_links(url):
+def crawl_links(start_url):
 
-    links = set()
+    visited = set()
+    to_visit = [(start_url, 0)]
 
-    try:
-        response = requests.get(url, timeout=5)
-        soup = BeautifulSoup(response.text, "html.parser")
+    links = []
 
-        for tag in soup.find_all("a", href=True):
+    while to_visit:
 
-            href = tag["href"]
+        url, depth = to_visit.pop(0)
 
-            if href.startswith("#") or href.startswith("mailto:") or href.startswith("javascript:"):
-                continue
+        if depth > MAX_DEPTH:
+            continue
 
-            full_url = urljoin(url, href)
+        if url in visited:
+            continue
 
-            if not full_url.startswith("http"):
-                continue
+        visited.add(url)
 
-            if is_same_domain(url, full_url):
-                links.add(full_url)
+        try:
+            response = session.get(url, headers=HEADERS, timeout=5)
 
-            if len(links) >= MAX_LINKS:
-                break
+            soup = BeautifulSoup(response.text, "html.parser")
 
-    except Exception as e:
-        print("Crawl error:", e)
+            for tag in soup.find_all("a", href=True):
 
-    return list(links)
+                href = tag["href"]
+
+                if href.startswith("#") or href.startswith("mailto:") or href.startswith("javascript:"):
+                    continue
+
+                full_url = urljoin(url, href)
+
+                if not full_url.startswith("http"):
+                    continue
+
+                if not is_same_domain(start_url, full_url):
+                    continue
+
+                if full_url not in visited:
+
+                    links.append(full_url)
+                    to_visit.append((full_url, depth + 1))
+
+                if len(links) >= MAX_LINKS:
+                    return links
+
+        except:
+            pass
+
+    return links
 
 
 # -----------------------------
@@ -88,6 +141,7 @@ def detect_parameters(url):
 
     try:
         params_part = url.split("?", 1)[1]
+
         param_list = params_part.split("&")
 
         parameters = []
@@ -107,6 +161,8 @@ def detect_parameters(url):
 # -----------------------------
 def scan_link(link):
 
+    print("Scanning:", link)
+
     results = {
         "xss": [],
         "sql": []
@@ -116,11 +172,8 @@ def scan_link(link):
 
     if params:
 
-        xss_results = test_xss(link, params)
-        sql_results = test_sql(link, params)
-
-        results["xss"].extend(xss_results)
-        results["sql"].extend(sql_results)
+        results["xss"].extend(test_xss(link, params))
+        results["sql"].extend(test_sql(link, params))
 
     return results
 
@@ -134,7 +187,7 @@ def scan_url(url):
 
     try:
 
-        response = requests.get(url, timeout=5)
+        response = session.get(url, headers=HEADERS, timeout=10)
 
         result["url"] = url
         result["status_code"] = response.status_code
@@ -145,11 +198,11 @@ def scan_url(url):
         # Security headers
         result["missing_security_headers"] = check_security_headers(response.headers)
 
-        # Crawl links
+        # Crawl
         links = crawl_links(url)
         result["links_found"] = links
 
-        # Form scan
+        # Forms
         result["form_vulnerabilities"] = scan_forms(url)
 
         all_xss = []
@@ -162,17 +215,50 @@ def scan_url(url):
             all_xss.extend(test_xss(url, main_params))
             all_sql.extend(test_sql(url, main_params))
 
+        # -----------------------------
         # Threaded link scanning
+        # -----------------------------
         with ThreadPoolExecutor(max_workers=5) as executor:
 
             futures = [executor.submit(scan_link, link) for link in links]
 
             for future in futures:
 
-                data = future.result()
+                try:
+                    data = future.result()
 
-                all_xss.extend(data["xss"])
-                all_sql.extend(data["sql"])
+                    all_xss.extend(data["xss"])
+                    all_sql.extend(data["sql"])
+
+                except:
+                    pass
+
+        # -----------------------------
+        # Parameter fuzzing
+        # -----------------------------
+        fuzzed_urls = []
+        scanned = set()
+
+        for link in links:
+
+            discovered = fuzz_parameters(link)
+
+            for param, fuzz_url in discovered:
+
+                if fuzz_url in scanned:
+                    continue
+
+                scanned.add(fuzz_url)
+
+                fuzzed_urls.append({
+                    "parameter": param,
+                    "url": fuzz_url
+                })
+
+                all_xss.extend(test_xss(fuzz_url, [param]))
+                all_sql.extend(test_sql(fuzz_url, [param]))
+
+        result["fuzzed_parameters"] = fuzzed_urls
 
         result["xss_vulnerabilities"] = all_xss
         result["sql_vulnerabilities"] = all_sql
