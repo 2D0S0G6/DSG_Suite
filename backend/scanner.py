@@ -1,17 +1,28 @@
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from payload_tester import test_xss, test_sql
+from payload_tester import test_xss, test_sql, test_time_sql
 from form_scanner import scan_forms
 from param_wordlist import COMMON_PARAMETERS
 
+
+# -----------------------------
+# Global config
+# -----------------------------
 session = requests.Session()
-MAX_DEPTH = 2
+
 HEADERS = {
     "User-Agent": "DSG-Scanner/1.0"
 }
+
+MAX_DEPTH = 2
+MAX_LINKS = 20
+REQUEST_TIMEOUT = 3
+MAX_THREADS = 10
+
+
 SECURITY_HEADERS = [
     "Content-Security-Policy",
     "X-Frame-Options",
@@ -19,12 +30,6 @@ SECURITY_HEADERS = [
     "X-Content-Type-Options",
     "Strict-Transport-Security"
 ]
-
-MAX_LINKS = 20
-
-HEADERS = {
-    "User-Agent": "DSG-Scanner/1.0"
-}
 
 
 # -----------------------------
@@ -39,18 +44,32 @@ def is_same_domain(base_url, target_url):
 
 
 # -----------------------------
+# Safe URL builder
+# -----------------------------
+def build_url(url, param, value):
+
+    if "?" in url:
+        return f"{url}&{param}={value}"
+    else:
+        return f"{url}?{param}={value}"
+
+
+# -----------------------------
 # Parameter fuzzing
 # -----------------------------
 def fuzz_parameters(url):
 
     discovered = []
 
-    for param in COMMON_PARAMETERS:
+    for param in COMMON_PARAMETERS[:30]:   # limit fuzz size
 
-        test_url = f"{url}?{param}=1"
+        test_url = build_url(url, param, "1")
+
+        print("Fuzzing:", test_url)
 
         try:
-            r = session.get(test_url, headers=HEADERS, timeout=5)
+
+            r = session.get(test_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
 
             if r.status_code == 200 and len(r.text) > 100:
                 discovered.append((param, test_url))
@@ -84,7 +103,8 @@ def crawl_links(start_url):
         visited.add(url)
 
         try:
-            response = session.get(url, headers=HEADERS, timeout=5)
+
+            response = session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
 
             soup = BeautifulSoup(response.text, "html.parser")
 
@@ -118,7 +138,7 @@ def crawl_links(start_url):
 
 
 # -----------------------------
-# Check security headers
+# Security header check
 # -----------------------------
 def check_security_headers(headers):
 
@@ -140,17 +160,17 @@ def detect_parameters(url):
         return []
 
     try:
-        params_part = url.split("?", 1)[1]
 
+        params_part = url.split("?", 1)[1]
         param_list = params_part.split("&")
 
-        parameters = []
+        parameters = set()
 
         for p in param_list:
             key = p.split("=")[0]
-            parameters.append(key)
+            parameters.add(key)
 
-        return parameters
+        return list(parameters)
 
     except:
         return []
@@ -174,6 +194,7 @@ def scan_link(link):
 
         results["xss"].extend(test_xss(link, params))
         results["sql"].extend(test_sql(link, params))
+        results["sql"].extend(test_time_sql(link, params))
 
     return results
 
@@ -187,7 +208,7 @@ def scan_url(url):
 
     try:
 
-        response = session.get(url, headers=HEADERS, timeout=10)
+        response = session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
 
         result["url"] = url
         result["status_code"] = response.status_code
@@ -195,36 +216,39 @@ def scan_url(url):
         result["content_length"] = len(response.content)
         result["headers"] = dict(response.headers)
 
-        # Security headers
+        # security headers
         result["missing_security_headers"] = check_security_headers(response.headers)
 
-        # Crawl
+        # crawl site
         links = crawl_links(url)
         result["links_found"] = links
 
-        # Forms
+        # scan forms
         result["form_vulnerabilities"] = scan_forms(url)
 
         all_xss = []
         all_sql = []
 
-        # Scan main URL parameters
+        # scan main URL parameters
         main_params = detect_parameters(url)
 
         if main_params:
+
             all_xss.extend(test_xss(url, main_params))
             all_sql.extend(test_sql(url, main_params))
+            all_sql.extend(test_time_sql(url, main_params))
 
         # -----------------------------
-        # Threaded link scanning
+        # threaded link scanning
         # -----------------------------
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        with ThreadPoolExecutor(MAX_THREADS) as executor:
 
             futures = [executor.submit(scan_link, link) for link in links]
 
-            for future in futures:
+            for future in as_completed(futures):
 
                 try:
+
                     data = future.result()
 
                     all_xss.extend(data["xss"])
@@ -233,33 +257,37 @@ def scan_url(url):
                 except:
                     pass
 
+
         # -----------------------------
-        # Parameter fuzzing
+        # threaded parameter fuzzing
         # -----------------------------
         fuzzed_urls = []
         scanned = set()
 
-        for link in links:
+        with ThreadPoolExecutor(MAX_THREADS) as executor:
 
-            discovered = fuzz_parameters(link)
+            futures = [executor.submit(fuzz_parameters, link) for link in links]
 
-            for param, fuzz_url in discovered:
+            for future in as_completed(futures):
 
-                if fuzz_url in scanned:
-                    continue
+                discovered = future.result()
 
-                scanned.add(fuzz_url)
+                for param, fuzz_url in discovered:
 
-                fuzzed_urls.append({
-                    "parameter": param,
-                    "url": fuzz_url
-                })
+                    if fuzz_url in scanned:
+                        continue
 
-                all_xss.extend(test_xss(fuzz_url, [param]))
-                all_sql.extend(test_sql(fuzz_url, [param]))
+                    scanned.add(fuzz_url)
+
+                    fuzzed_urls.append({
+                        "parameter": param,
+                        "url": fuzz_url
+                    })
+
+                    all_xss.extend(test_xss(fuzz_url, [param]))
+                    all_sql.extend(test_sql(fuzz_url, [param]))
 
         result["fuzzed_parameters"] = fuzzed_urls
-
         result["xss_vulnerabilities"] = all_xss
         result["sql_vulnerabilities"] = all_sql
 
