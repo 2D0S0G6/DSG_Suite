@@ -1,26 +1,31 @@
 import requests
+import asyncio
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from payload_tester import test_xss, test_sql, test_time_sql
+from payload_tester import test_xss, test_sql
 from form_scanner import scan_forms
+from js_endpoint_extractor import extract_js_endpoints
+from report_generator import generate_html_report
+from dir_wordlist import DIR_WORDLIST
 from param_wordlist import COMMON_PARAMETERS
 
+from async_scanner import run_async_scan
+from dom_xss_scanner import scan_dom_xss
+from subdomain_scanner import discover_subdomains
 
-# -----------------------------
-# Global config
-# -----------------------------
+
 session = requests.Session()
 
 HEADERS = {
-    "User-Agent": "DSG-Scanner/1.0"
+    "User-Agent": "DSG-Scanner/2.0"
 }
 
 MAX_DEPTH = 2
-MAX_LINKS = 20
-REQUEST_TIMEOUT = 3
-MAX_THREADS = 10
+MAX_LINKS = 25
+TIMEOUT = 5
+
+visited_urls = set()
 
 
 SECURITY_HEADERS = [
@@ -32,67 +37,51 @@ SECURITY_HEADERS = [
 ]
 
 
-# -----------------------------
-# Domain filter
-# -----------------------------
-def is_same_domain(base_url, target_url):
+# --------------------------------
+# Check same domain
+# --------------------------------
+def same_domain(base, target):
 
-    base_domain = urlparse(base_url).netloc
-    target_domain = urlparse(target_url).netloc
-
-    return base_domain == target_domain
+    return urlparse(base).netloc == urlparse(target).netloc
 
 
-# -----------------------------
-# Safe URL builder
-# -----------------------------
-def build_url(url, param, value):
+# --------------------------------
+# Detect parameters
+# --------------------------------
+def detect_parameters(url):
 
-    if "?" in url:
-        return f"{url}&{param}={value}"
-    else:
-        return f"{url}?{param}={value}"
+    if "?" not in url:
+        return []
 
+    params = url.split("?")[1]
 
-# -----------------------------
-# Parameter fuzzing
-# -----------------------------
-def fuzz_parameters(url):
+    found = []
 
-    discovered = []
+    for p in params.split("&"):
 
-    for param in COMMON_PARAMETERS[:30]:   # limit fuzz size
+        key = p.split("=")[0]
 
-        test_url = build_url(url, param, "1")
+        if key not in found:
+            found.append(key)
 
-        print("Fuzzing:", test_url)
-
-        try:
-
-            r = session.get(test_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-
-            if r.status_code == 200 and len(r.text) > 100:
-                discovered.append((param, test_url))
-
-        except:
-            pass
-
-    return discovered
+    return found
 
 
-# -----------------------------
-# Crawl links
-# -----------------------------
+# --------------------------------
+# Crawl website
+# --------------------------------
 def crawl_links(start_url):
 
+    print("[+] Crawling site")
+
     visited = set()
-    to_visit = [(start_url, 0)]
+    queue = [(start_url, 0)]
 
     links = []
 
-    while to_visit:
+    while queue:
 
-        url, depth = to_visit.pop(0)
+        url, depth = queue.pop(0)
 
         if depth > MAX_DEPTH:
             continue
@@ -104,29 +93,24 @@ def crawl_links(start_url):
 
         try:
 
-            response = session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+            r = session.get(url, headers=HEADERS, timeout=TIMEOUT)
 
-            soup = BeautifulSoup(response.text, "html.parser")
+            soup = BeautifulSoup(r.text, "html.parser")
 
-            for tag in soup.find_all("a", href=True):
+            for a in soup.find_all("a", href=True):
 
-                href = tag["href"]
+                link = urljoin(url, a["href"])
 
-                if href.startswith("#") or href.startswith("mailto:") or href.startswith("javascript:"):
+                if not link.startswith("http"):
                     continue
 
-                full_url = urljoin(url, href)
-
-                if not full_url.startswith("http"):
+                if not same_domain(start_url, link):
                     continue
 
-                if not is_same_domain(start_url, full_url):
-                    continue
+                if link not in visited and link not in links:
 
-                if full_url not in visited:
-
-                    links.append(full_url)
-                    to_visit.append((full_url, depth + 1))
+                    links.append(link)
+                    queue.append((link, depth + 1))
 
                 if len(links) >= MAX_LINKS:
                     return links
@@ -137,164 +121,152 @@ def crawl_links(start_url):
     return links
 
 
-# -----------------------------
+# --------------------------------
+# Directory brute force
+# --------------------------------
+def dir_bruteforce(base_url):
+
+    print("[+] Running directory brute force")
+
+    found = []
+
+    for word in DIR_WORDLIST:
+
+        url = f"{base_url}/{word}"
+
+        try:
+
+            r = session.get(url, timeout=TIMEOUT)
+
+            if r.status_code in [200, 301, 302]:
+
+                print("[+] Directory found:", url)
+
+                found.append(url)
+
+        except:
+            pass
+
+    return found
+
+
+# --------------------------------
 # Security header check
-# -----------------------------
-def check_security_headers(headers):
+# --------------------------------
+def check_headers(headers):
 
     missing = []
 
-    for header in SECURITY_HEADERS:
-        if header not in headers:
-            missing.append(header)
+    for h in SECURITY_HEADERS:
+
+        if h not in headers:
+            missing.append(h)
 
     return missing
 
 
-# -----------------------------
-# Detect parameters
-# -----------------------------
-def detect_parameters(url):
+# --------------------------------
+# Parameter fuzzing
+# --------------------------------
+def fuzz_parameters(url):
 
-    if "?" not in url:
-        return []
+    fuzzed = []
 
-    try:
+    for param in COMMON_PARAMETERS[:20]:
 
-        params_part = url.split("?", 1)[1]
-        param_list = params_part.split("&")
+        if "?" in url:
+            test_url = f"{url}&{param}=1"
+        else:
+            test_url = f"{url}?{param}=1"
 
-        parameters = set()
+        fuzzed.append({
+            "parameter": param,
+            "url": test_url
+        })
 
-        for p in param_list:
-            key = p.split("=")[0]
-            parameters.add(key)
-
-        return list(parameters)
-
-    except:
-        return []
+    return fuzzed
 
 
-# -----------------------------
-# Scan single link
-# -----------------------------
-def scan_link(link):
-
-    print("Scanning:", link)
-
-    results = {
-        "xss": [],
-        "sql": []
-    }
-
-    params = detect_parameters(link)
-
-    if params:
-
-        results["xss"].extend(test_xss(link, params))
-        results["sql"].extend(test_sql(link, params))
-        results["sql"].extend(test_time_sql(link, params))
-
-    return results
-
-
-# -----------------------------
-# Main scan function
-# -----------------------------
+# --------------------------------
+# MAIN SCANNER
+# --------------------------------
 def scan_url(url):
 
     result = {}
 
-    try:
+    print("\n===============================")
+    print(" DSG SUITE")
+    print("===============================\n")
 
-        response = session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+    print("[+] Target:", url)
 
-        result["url"] = url
-        result["status_code"] = response.status_code
-        result["reachable"] = True
-        result["content_length"] = len(response.content)
-        result["headers"] = dict(response.headers)
+    r = session.get(url, headers=HEADERS)
 
-        # security headers
-        result["missing_security_headers"] = check_security_headers(response.headers)
+    result["url"] = url
+    result["status_code"] = r.status_code
+    result["headers"] = dict(r.headers)
 
-        # crawl site
-        links = crawl_links(url)
-        result["links_found"] = links
+    result["missing_security_headers"] = check_headers(r.headers)
 
-        # scan forms
-        result["form_vulnerabilities"] = scan_forms(url)
+    # Crawl
+    links = crawl_links(url)
 
-        all_xss = []
-        all_sql = []
+    print("[+] Links discovered:", len(links))
 
-        # scan main URL parameters
-        main_params = detect_parameters(url)
+    result["links_found"] = links
 
-        if main_params:
+    # JS endpoint discovery
+    print("[+] Extracting JS endpoints")
 
-            all_xss.extend(test_xss(url, main_params))
-            all_sql.extend(test_sql(url, main_params))
-            all_sql.extend(test_time_sql(url, main_params))
+    result["js_endpoints"] = extract_js_endpoints(url)
 
-        # -----------------------------
-        # threaded link scanning
-        # -----------------------------
-        with ThreadPoolExecutor(MAX_THREADS) as executor:
+    # Directory brute force
+    result["directories"] = dir_bruteforce(url)
 
-            futures = [executor.submit(scan_link, link) for link in links]
+    # Subdomain discovery
+    domain = urlparse(url).netloc
 
-            for future in as_completed(futures):
+    print("[+] Discovering subdomains")
 
-                try:
+    result["subdomains"] = discover_subdomains(domain)
 
-                    data = future.result()
+    # Form scanning
+    print("[+] Scanning forms")
 
-                    all_xss.extend(data["xss"])
-                    all_sql.extend(data["sql"])
+    result["form_vulnerabilities"] = scan_forms(url)
 
-                except:
-                    pass
+    # Async vulnerability scanning
+    print("[+] Running async vulnerability scan")
 
+    xss, sql = asyncio.run(run_async_scan(links))
 
-        # -----------------------------
-        # threaded parameter fuzzing
-        # -----------------------------
-        fuzzed_urls = []
-        scanned = set()
+    result["xss_vulnerabilities"] = xss
+    result["sql_vulnerabilities"] = sql
 
-        with ThreadPoolExecutor(MAX_THREADS) as executor:
+    # DOM XSS scan
+    print("[+] Checking DOM XSS")
 
-            futures = [executor.submit(fuzz_parameters, link) for link in links]
+    dom_results = []
 
-            for future in as_completed(futures):
+    for link in links:
 
-                discovered = future.result()
+        dom_results.extend(scan_dom_xss(link))
 
-                for param, fuzz_url in discovered:
+    result["dom_xss"] = dom_results
 
-                    if fuzz_url in scanned:
-                        continue
+    # Parameter fuzzing
+    fuzzed = []
 
-                    scanned.add(fuzz_url)
+    for link in links:
 
-                    fuzzed_urls.append({
-                        "parameter": param,
-                        "url": fuzz_url
-                    })
+        fuzzed.extend(fuzz_parameters(link))
 
-                    all_xss.extend(test_xss(fuzz_url, [param]))
-                    all_sql.extend(test_sql(fuzz_url, [param]))
+    result["fuzzed_parameters"] = fuzzed
 
-        result["fuzzed_parameters"] = fuzzed_urls
-        result["xss_vulnerabilities"] = all_xss
-        result["sql_vulnerabilities"] = all_sql
+    # Generate report
+    generate_html_report(result)
 
-    except Exception as e:
-
-        result["url"] = url
-        result["reachable"] = False
-        result["error"] = str(e)
+    print("\n[+] Scan completed")
+    print("[+] Report saved: reports/report.html\n")
 
     return result
