@@ -1,4 +1,5 @@
 import sys
+from unittest import result
 from flask import Flask, request, jsonify
 from scanner import scan_url
 
@@ -78,15 +79,17 @@ def run_cli():
 
     result = scan_url(target)
 
-    print("\n====== Scan Summary ======")
+    print("\n====== SCAN SUMMARY ======")
 
-    print("Links discovered:", len(result.get("links_found", [])))
-    print("XSS vulnerabilities:", len(result.get("xss_vulnerabilities", [])))
-    print("SQL vulnerabilities:", len(result.get("sql_vulnerabilities", [])))
-    print("Directories found:", len(result.get("directories", [])))
-    print("JS endpoints:", len(result.get("js_endpoints", [])))
+    print(f"[+] Links: {len(result.get('links_found', []))}")
+    print(f"[+] XSS: {len(result.get('xss_vulnerabilities', []))}")
+    print(f"[+] SQLi: {len(result.get('sql_vulnerabilities', []))}")
+    print(f"[+] DOM XSS: {len(result.get('dom_xss', []))}")
+    print(f"[+] Directories: {len(result.get('directories', []))}")
+    print(f"[+] JS Endpoints: {len(result.get('js_endpoints', []))}")
+    print(f"[+] Subdomains: {len(result.get('subdomains', []))}")
 
-    print("\n[+] HTML report generated: reports/report.html\n")
+    print("\n[+] Report: reports/report.html\n")
 
 
 # -----------------------------

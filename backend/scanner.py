@@ -14,7 +14,8 @@ from async_scanner import run_async_scan
 from dom_xss_scanner import scan_dom_xss
 from subdomain_scanner import discover_subdomains
 
-
+visited_urls = set()
+tested_payloads = set()
 session = requests.Session()
 
 HEADERS = {
@@ -138,7 +139,7 @@ def dir_bruteforce(base_url):
 
             r = session.get(url, timeout=TIMEOUT)
 
-            if r.status_code in [200, 301, 302]:
+            if r.status_code in [200, 301, 302] and len(r.text) > 200:
 
                 print("[+] Directory found:", url)
 
