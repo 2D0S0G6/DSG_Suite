@@ -1,57 +1,52 @@
 import asyncio
 import aiohttp
+import random
 from payload_tester import test_xss, test_sql
 
-HEADERS = {
-    "User-Agent": "DSG-Async-Scanner"
-}
+USER_AGENTS = [
+    "Mozilla/5.0",
+    "Chrome/120.0",
+    "Safari/537.36"
+]
 
-# Limit concurrency (VERY IMPORTANT)
 SEM = asyncio.Semaphore(10)
 
 
-# --------------------------------
-# Extract parameters
-# --------------------------------
-def extract_params(url):
+def get_headers():
+    return {"User-Agent": random.choice(USER_AGENTS)}
 
+
+def extract_params(url):
     if "?" not in url:
         return []
 
     params = []
-
     query = url.split("?", 1)[1]
 
     for p in query.split("&"):
-
         key = p.split("=")[0]
-
         if key not in params:
             params.append(key)
 
     return params
 
 
-# --------------------------------
-# Async scan single link
-# --------------------------------
+async def smart_delay():
+    await asyncio.sleep(random.uniform(0.5, 1.5))
+
+
 async def scan_link(session, url, visited, tested):
 
-    # Skip duplicates
     if url in visited:
         return {"xss": [], "sql": []}
 
     visited.add(url)
 
     params = extract_params(url)
-
-    # Skip URLs without parameters (BIG speed boost)
     if not params:
         return {"xss": [], "sql": []}
 
-    # Prevent duplicate payload testing
     key = url + str(params)
-
     if key in tested:
         return {"xss": [], "sql": []}
 
@@ -63,13 +58,11 @@ async def scan_link(session, url, visited, tested):
 
     try:
         async with SEM:
+            await smart_delay()
 
-            timeout = aiohttp.ClientTimeout(total=5)
+            async with session.get(url, headers=get_headers(), timeout=5) as r:
+                await r.text()
 
-            async with session.get(url, timeout=timeout) as r:
-                await r.text()  # ensure request completes
-
-        # Run payload tests AFTER request (non-blocking part)
         results["xss"].extend(test_xss(url, params))
         results["sql"].extend(test_sql(url, params))
 
@@ -79,20 +72,12 @@ async def scan_link(session, url, visited, tested):
     return results
 
 
-# --------------------------------
-# Run async scan
-# --------------------------------
 async def run_async_scan(links):
 
     visited = set()
     tested = set()
 
-    connector = aiohttp.TCPConnector(limit=20)
-
-    async with aiohttp.ClientSession(
-        headers=HEADERS,
-        connector=connector
-    ) as session:
+    async with aiohttp.ClientSession() as session:
 
         tasks = [
             scan_link(session, link, visited, tested)

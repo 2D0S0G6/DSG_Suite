@@ -1,148 +1,81 @@
 import requests
-import asyncio
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
-
-from payload_tester import test_xss, test_sql
-from form_scanner import scan_forms
-from js_endpoint_extractor import extract_js_endpoints
-from report_generator import generate_html_report
-from dir_wordlist import DIR_WORDLIST
-from param_wordlist import COMMON_PARAMETERS
+from urllib.parse import urljoin
+import asyncio
+import logging
 
 from async_scanner import run_async_scan
-from dom_xss_scanner import scan_dom_xss
-from subdomain_scanner import discover_subdomains
+from form_scanner import scan_forms
 
-visited_urls = set()
-tested_payloads = set()
-session = requests.Session()
+logging.basicConfig(filename="scanner.log", level=logging.INFO)
 
-HEADERS = {
-    "User-Agent": "DSG-Scanner/2.0"
-}
-
-MAX_DEPTH = 2
-MAX_LINKS = 25
-TIMEOUT = 5
-
-visited_urls = set()
+COMMON_DIRS = ["admin", "dashboard", "backup", "config"]
 
 
-SECURITY_HEADERS = [
-    "Content-Security-Policy",
-    "X-Frame-Options",
-    "X-XSS-Protection",
-    "X-Content-Type-Options",
-    "Strict-Transport-Security"
-]
-
-
-# --------------------------------
-# Check same domain
-# --------------------------------
-def same_domain(base, target):
-
-    return urlparse(base).netloc == urlparse(target).netloc
-
-
-# --------------------------------
-# Detect parameters
-# --------------------------------
-def detect_parameters(url):
-
-    if "?" not in url:
-        return []
-
-    params = url.split("?")[1]
-
-    found = []
-
-    for p in params.split("&"):
-
-        key = p.split("=")[0]
-
-        if key not in found:
-            found.append(key)
-
-    return found
-
-
-# --------------------------------
-# Crawl website
-# --------------------------------
-def crawl_links(start_url):
-
-    print("[+] Crawling site")
+# -----------------------------
+# Crawl
+# -----------------------------
+def crawl_links(url):
 
     visited = set()
-    queue = [(start_url, 0)]
-
     links = []
 
-    while queue:
+    try:
+        r = requests.get(url, timeout=5)
+        soup = BeautifulSoup(r.text, "html.parser")
 
-        url, depth = queue.pop(0)
+        for tag in soup.find_all("a", href=True):
 
-        if depth > MAX_DEPTH:
-            continue
+            full = urljoin(url, tag["href"])
 
-        if url in visited:
-            continue
+            if full not in visited and full.startswith("http"):
+                visited.add(full)
+                links.append(full)
 
-        visited.add(url)
+    except:
+        pass
 
-        try:
-
-            r = session.get(url, headers=HEADERS, timeout=TIMEOUT)
-
-            soup = BeautifulSoup(r.text, "html.parser")
-
-            for a in soup.find_all("a", href=True):
-
-                link = urljoin(url, a["href"])
-
-                if not link.startswith("http"):
-                    continue
-
-                if not same_domain(start_url, link):
-                    continue
-
-                if link not in visited and link not in links:
-
-                    links.append(link)
-                    queue.append((link, depth + 1))
-
-                if len(links) >= MAX_LINKS:
-                    return links
-
-        except:
-            pass
-
-    return links
+    return links[:25]
 
 
-# --------------------------------
+# -----------------------------
+# JS endpoint discovery
+# -----------------------------
+def extract_js_endpoints(url):
+
+    endpoints = []
+
+    try:
+        r = requests.get(url, timeout=5)
+
+        lines = r.text.split("\n")
+
+        for line in lines:
+            if "/api/" in line:
+                endpoints.append(line.strip())
+
+    except:
+        pass
+
+    return endpoints
+
+
+# -----------------------------
 # Directory brute force
-# --------------------------------
-def dir_bruteforce(base_url):
-
-    print("[+] Running directory brute force")
+# -----------------------------
+def dir_bruteforce(base):
 
     found = []
 
-    for word in DIR_WORDLIST:
+    for d in COMMON_DIRS:
 
-        url = f"{base_url}/{word}"
+        url = f"{base}/{d}"
 
         try:
+            r = requests.get(url, timeout=3)
 
-            r = session.get(url, timeout=TIMEOUT)
-
-            if r.status_code in [200, 301, 302] and len(r.text) > 200:
-
+            if r.status_code == 200:
                 print("[+] Directory found:", url)
-
                 found.append(url)
 
         except:
@@ -151,123 +84,89 @@ def dir_bruteforce(base_url):
     return found
 
 
-# --------------------------------
-# Security header check
-# --------------------------------
-def check_headers(headers):
+# -----------------------------
+# DOM XSS detection
+# -----------------------------
+def detect_dom_xss(html):
 
-    missing = []
+    patterns = ["document.write", "innerHTML", "eval(", "location"]
 
-    for h in SECURITY_HEADERS:
-
-        if h not in headers:
-            missing.append(h)
-
-    return missing
+    return [p for p in patterns if p in html]
 
 
-# --------------------------------
-# Parameter fuzzing
-# --------------------------------
-def fuzz_parameters(url):
+# -----------------------------
+# HTML Report
+# -----------------------------
+def generate_report(data):
 
-    fuzzed = []
+    html = f"""
+    <html>
+    <head><title>DSG Report</title></head>
+    <body>
 
-    for param in COMMON_PARAMETERS[:20]:
+    <h1>DSG Scan Report</h1>
+    <p><b>Target:</b> {data['url']}</p>
 
-        if "?" in url:
-            test_url = f"{url}&{param}=1"
-        else:
-            test_url = f"{url}?{param}=1"
+    <h2>XSS</h2>
+    <pre>{data['xss_vulnerabilities']}</pre>
 
-        fuzzed.append({
-            "parameter": param,
-            "url": test_url
-        })
+    <h2>SQLi</h2>
+    <pre>{data['sql_vulnerabilities']}</pre>
 
-    return fuzzed
+    <h2>Directories</h2>
+    <pre>{data['directories']}</pre>
+
+    <h2>JS Endpoints</h2>
+    <pre>{data['js_endpoints']}</pre>
+
+    </body>
+    </html>
+    """
+
+    with open("reports/report.html", "w") as f:
+        f.write(html)
 
 
-# --------------------------------
-# MAIN SCANNER
-# --------------------------------
+# -----------------------------
+# MAIN
+# -----------------------------
 def scan_url(url):
 
-    result = {}
-
-    print("\n===============================")
-    print(" DSG SUITE")
-    print("===============================\n")
-
-    print("[+] Target:", url)
-
-    r = session.get(url, headers=HEADERS)
-
-    result["url"] = url
-    result["status_code"] = r.status_code
-    result["headers"] = dict(r.headers)
-
-    result["missing_security_headers"] = check_headers(r.headers)
-
-    # Crawl
+    print("\n[+] Crawling site")
     links = crawl_links(url)
 
     print("[+] Links discovered:", len(links))
 
-    result["links_found"] = links
-
-    # JS endpoint discovery
     print("[+] Extracting JS endpoints")
+    js = extract_js_endpoints(url)
 
-    result["js_endpoints"] = extract_js_endpoints(url)
+    print("[+] Running directory brute force")
+    dirs = dir_bruteforce(url)
 
-    # Directory brute force
-    result["directories"] = dir_bruteforce(url)
-
-    # Subdomain discovery
-    domain = urlparse(url).netloc
-
-    print("[+] Discovering subdomains")
-
-    result["subdomains"] = discover_subdomains(domain)
-
-    # Form scanning
     print("[+] Scanning forms")
+    forms = scan_forms(url)
 
-    result["form_vulnerabilities"] = scan_forms(url)
-
-    # Async vulnerability scanning
     print("[+] Running async vulnerability scan")
-
     xss, sql = asyncio.run(run_async_scan(links))
 
-    result["xss_vulnerabilities"] = xss
-    result["sql_vulnerabilities"] = sql
+    dom = []
+    try:
+        r = requests.get(url)
+        dom = detect_dom_xss(r.text)
+    except:
+        pass
 
-    # DOM XSS scan
-    print("[+] Checking DOM XSS")
+    result = {
+        "url": url,
+        "links_found": links,
+        "xss_vulnerabilities": xss,
+        "sql_vulnerabilities": sql,
+        "directories": dirs,
+        "js_endpoints": js,
+        "dom_xss": dom,
+        "forms": forms
+    }
 
-    dom_results = []
-
-    for link in links:
-
-        dom_results.extend(scan_dom_xss(link))
-
-    result["dom_xss"] = dom_results
-
-    # Parameter fuzzing
-    fuzzed = []
-
-    for link in links:
-
-        fuzzed.extend(fuzz_parameters(link))
-
-    result["fuzzed_parameters"] = fuzzed
-
-    # Generate report
-    generate_html_report(result)
-
-    print("\n[+] Scan completed")
-    print("[+] Report saved: reports/report.html\n")
+    generate_report(result)
 
     return result
