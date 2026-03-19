@@ -3,7 +3,7 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 import asyncio
 import logging
-
+import re
 from async_scanner import run_async_scan
 from form_scanner import scan_forms
 
@@ -11,7 +11,10 @@ logging.basicConfig(filename="scanner.log", level=logging.INFO)
 
 COMMON_DIRS = ["admin", "dashboard", "backup", "config"]
 
-
+PROXIES = {
+    "http": "http://127.0.0.1:8080",
+    "https": "http://127.0.0.1:8080"
+}
 # -----------------------------
 # Crawl
 # -----------------------------
@@ -21,7 +24,7 @@ def crawl_links(url):
     links = []
 
     try:
-        r = requests.get(url, timeout=5)
+        r = requests.get(url, timeout=5, proxies=PROXIES, verify=False)
         soup = BeautifulSoup(r.text, "html.parser")
 
         for tag in soup.find_all("a", href=True):
@@ -41,6 +44,8 @@ def crawl_links(url):
 # -----------------------------
 # JS endpoint discovery
 # -----------------------------
+
+
 def extract_js_endpoints(url):
 
     endpoints = []
@@ -48,16 +53,14 @@ def extract_js_endpoints(url):
     try:
         r = requests.get(url, timeout=5)
 
-        lines = r.text.split("\n")
+        matches = re.findall(r'["\'](\/api\/[^"\']+)["\']', r.text)
 
-        for line in lines:
-            if "/api/" in line:
-                endpoints.append(line.strip())
+        endpoints.extend(matches)
 
     except:
         pass
 
-    return endpoints
+    return list(set(endpoints))
 
 
 # -----------------------------
@@ -131,7 +134,8 @@ def generate_report(data):
 # MAIN
 # -----------------------------
 def scan_url(url):
-
+    print("[+] Discovering subdomains")
+    subs = find_subdomains(url)
     print("\n[+] Crawling site")
     links = crawl_links(url)
 
@@ -145,7 +149,12 @@ def scan_url(url):
 
     print("[+] Scanning forms")
     forms = scan_forms(url)
+    redirects = []
 
+    for link in links:
+        r = test_open_redirect(link)
+        if r:
+            redirects.append(r)
     print("[+] Running async vulnerability scan")
     xss, sql = asyncio.run(run_async_scan(links))
 
@@ -164,9 +173,56 @@ def scan_url(url):
         "directories": dirs,
         "js_endpoints": js,
         "dom_xss": dom,
-        "forms": forms
+        "forms": forms,
+        "open_redirects": redirects,
+        "subdomains": subs
     }
 
     generate_report(result)
 
     return result
+
+def find_subdomains(url):
+
+    from urllib.parse import urlparse
+
+    domain = urlparse(url).netloc
+
+    subs = ["api", "dev", "test", "staging"]
+
+    found = []
+
+    for s in subs:
+
+        sub_url = f"http://{s}.{domain}"
+
+        try:
+            r = requests.get(sub_url, timeout=3)
+
+            if r.status_code < 400:
+                print("[+] Subdomain found:", sub_url)
+                found.append(sub_url)
+
+        except:
+            pass
+
+    return found
+def test_open_redirect(url):
+
+    payload = "https://evil.com"
+
+    if "?" not in url:
+        return None
+
+    test_url = url + "&redirect=" + payload
+
+    try:
+        r = requests.get(test_url, allow_redirects=False)
+
+        if "evil.com" in r.headers.get("Location", ""):
+            return test_url
+
+    except:
+        pass
+
+    return None

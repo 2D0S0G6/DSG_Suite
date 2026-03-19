@@ -7,7 +7,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return jsonify({"status": "DSG Scanner running"})
+    return jsonify({"status": "DSG_Suite running"})
 
 
 @app.route("/scan", methods=["POST"])
