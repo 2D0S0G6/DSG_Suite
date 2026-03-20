@@ -1,0 +1,119 @@
+{
+    "url": "http://demo.testfire.net",
+    "links_found": [
+        "http://demo.testfire.net/index.jsp?content=personal_investments.htm",
+        "http://demo.testfire.net/index.jsp?content=inside.htm",
+        "http://demo.testfire.net/inside_points_of_interest.htm",
+        "http://demo.testfire.net/index.jsp?content=inside_investor.htm",
+        "http://demo.testfire.net/index.jsp?content=personal.htm",
+        "http://demo.testfire.net/index.jsp?content=personal_checking.htm",
+        "http://demo.testfire.net/index.jsp?content=business_lending.htm",
+        "http://demo.testfire.net/high_yield_investments.htm",
+        "http://demo.testfire.net/index.jsp?content=inside_jobs.htm",
+        "http://demo.testfire.net/index.jsp?content=business_deposit.htm",
+        "http://demo.testfire.net/default.jsp?content=security.htm",
+        "http://demo.testfire.net/index.jsp?content=inside_executives.htm",
+        "http://demo.testfire.net/admin/clients.xls",
+        "http://demo.testfire.net/index.jsp?content=pr/20060413.htm",
+        "http://demo.testfire.net/index.jsp?content=inside_community.htm",
+        "http://demo.testfire.net/index.jsp?content=business_cards.htm",
+        "http://demo.testfire.net/index.jsp?content=security.htm",
+        "http://demo.testfire.net/status_check.jsp",
+        "http://demo.testfire.net/feedback.jsp",
+        "http://demo.testfire.net/disclaimer.htm?url=http://www.netscape.com",
+        "http://demo.testfire.net/survey_questions.jsp",
+        "http://demo.testfire.net/index.jsp?content=personal_deposit.htm",
+        "http://demo.testfire.net/index.jsp?content=pr/20060928.htm",
+        "http://demo.testfire.net/index.jsp?content=personal_savings.htm",
+        "http://demo.testfire.net/index.jsp?content=inside_press.htm",
+        "http://demo.testfire.net/index.jsp?content=business_insurance.htm",
+        "http://demo.testfire.net/index.jsp?content=pr/20060518.htm",
+        "http://demo.testfire.net/index.jsp?content=pr/20061109.htm",
+        "http://demo.testfire.net/index.jsp?content=business_other.htm",
+        "http://demo.testfire.net/index.jsp?content=business.htm",
+        "http://demo.testfire.net/index.jsp?content=pr/20060720.htm",
+        "http://demo.testfire.net/index.jsp?content=privacy.htm",
+        "http://demo.testfire.net/disclaimer.htm?url=http://www.microsoft.com",
+        "http://demo.testfire.net/index.jsp?content=personal_loans.htm",
+        "http://demo.testfire.net/cgi.exe",
+        "http://demo.testfire.net/index.jsp?content=business_retirement.htm",
+        "http://demo.testfire.net/index.jsp",
+        "http://demo.testfire.net/index.jsp?content=personal_other.htm",
+        "http://demo.testfire.net/index.jsp?content=pr/20060921.htm",
+        "http://demo.testfire.net/index.jsp?content=inside_contact.htm",
+        "http://demo.testfire.net/index.jsp?content=pr/20060817.htm",
+        "http://demo.testfire.net/index.jsp?content=inside_about.htm",
+        "http://demo.testfire.net/index.jsp?content=pr/20061005.htm",
+        "http://demo.testfire.net/my%20documents/JohnSmith/Bank%20Site%20Documents/grouplife.htm",
+        "http://demo.testfire.net/swagger/index.html",
+        "http://demo.testfire.net/index.jsp?content=inside_careers.htm",
+        "http://demo.testfire.net/login.jsp",
+        "http://demo.testfire.net/subscribe.jsp",
+        "http://demo.testfire.net/index.jsp?content=personal_cards.htm",
+        "http://demo.testfire.net/pr/communityannualreport.pdf"
+    ],
+    "xss_vulnerabilities": [
+        {
+            "type": "Reflected XSS",
+            "parameter": "query",
+            "payload": "<script>alert(1)</script>",
+            "url": "http://demo.testfire.net/search.jsp?query=<script>alert(1)</script>"
+        },
+        {
+            "type": "Reflected XSS",
+            "parameter": "query",
+            "payload": "\"><script>alert(1)</script>",
+            "url": "http://demo.testfire.net/search.jsp?query=\"><script>alert(1)</script>"
+        },
+        {
+            "type": "Reflected XSS",
+            "parameter": "query",
+            "payload": "<img src=x onerror=alert(1)>",
+            "url": "http://demo.testfire.net/search.jsp?query=<img src=x onerror=alert(1)>"
+        }
+    ],
+    "sql_vulnerabilities": [],
+    "directories": [
+        "http://demo.testfire.net/admin"
+    ],
+    "js_endpoints": [],
+    "dom_xss": [],
+    "forms": [
+        {
+            "form_action": "http://demo.testfire.net/search.jsp",
+            "method": "get",
+            "parameters": [
+                "query"
+            ],
+            "xss": [
+                {
+                    "type": "Reflected XSS",
+                    "parameter": "query",
+                    "payload": "<script>alert(1)</script>",
+                    "url": "http://demo.testfire.net/search.jsp?query=<script>alert(1)</script>"
+                },
+                {
+                    "type": "Reflected XSS",
+                    "parameter": "query",
+                    "payload": "\"><script>alert(1)</script>",
+                    "url": "http://demo.testfire.net/search.jsp?query=\"><script>alert(1)</script>"
+                },
+                {
+                    "type": "Reflected XSS",
+                    "parameter": "query",
+                    "payload": "<img src=x onerror=alert(1)>",
+                    "url": "http://demo.testfire.net/search.jsp?query=<img src=x onerror=alert(1)>"
+                }
+            ],
+            "sql": []
+        }
+    ],
+    "open_redirects": [],
+    "subdomains": [],
+    "cookie_issues": [
+        "Missing HttpOnly",
+        "Missing Secure"
+    ],
+    "sensitive_data": [],
+    "ssrf": []
+}

@@ -173,3 +173,34 @@ def test_sql(url, parameters):
                 pass
 
     return vulnerabilities
+
+def test_error_sql(url, params):
+
+    errors = [
+        "SQL syntax",
+        "mysql_fetch",
+        "ORA-01756",
+        "SQLite error"
+    ]
+
+    vulns = []
+
+    for p in params:
+
+        test_url = f"{url}&{p}='"
+
+        try:
+            r = requests.get(test_url, timeout=5)
+
+            for e in errors:
+                if e.lower() in r.text.lower():
+                    vulns.append({
+                        "parameter": p,
+                        "type": "Error-based SQLi",
+                        "url": test_url
+                    })
+
+        except:
+            pass
+
+    return vulns

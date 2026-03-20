@@ -7,7 +7,7 @@
     <p><b>Target:</b> http://demo.testfire.net</p>
 
     <h2>XSS</h2>
-    <pre>[]</pre>
+    <pre>[{'type': 'Reflected XSS', 'parameter': 'query', 'payload': '<script>alert(1)</script>', 'url': 'http://demo.testfire.net/search.jsp?query=<script>alert(1)</script>'}, {'type': 'Reflected XSS', 'parameter': 'query', 'payload': '"><script>alert(1)</script>', 'url': 'http://demo.testfire.net/search.jsp?query="><script>alert(1)</script>'}, {'type': 'Reflected XSS', 'parameter': 'query', 'payload': '<img src=x onerror=alert(1)>', 'url': 'http://demo.testfire.net/search.jsp?query=<img src=x onerror=alert(1)>'}]</pre>
 
     <h2>SQLi</h2>
     <pre>[]</pre>

@@ -1,7 +1,7 @@
 import asyncio
 import aiohttp
 import random
-from payload_tester import test_xss, test_sql
+from payload_tester import test_error_sql, test_xss, test_sql
 
 USER_AGENTS = [
     "Mozilla/5.0",
@@ -35,6 +35,16 @@ async def smart_delay():
     await asyncio.sleep(random.uniform(0.5, 1.5))
 
 
+# -----------------------------
+# Run blocking code safely
+# -----------------------------
+async def run_blocking(func, *args):
+    return await asyncio.to_thread(func, *args)
+
+
+# -----------------------------
+# Async scan
+# -----------------------------
 async def scan_link(session, url, visited, tested):
 
     if url in visited:
@@ -43,8 +53,10 @@ async def scan_link(session, url, visited, tested):
     visited.add(url)
 
     params = extract_params(url)
+    COMMON_PARAMS = ["id", "q", "search", "query", "url"]
+
     if not params:
-        return {"xss": [], "sql": []}
+        params = COMMON_PARAMS  # 👈 force testing even if no params
 
     key = url + str(params)
     if key in tested:
@@ -60,11 +72,29 @@ async def scan_link(session, url, visited, tested):
         async with SEM:
             await smart_delay()
 
-            async with session.get(url, headers=get_headers(), timeout=5) as r:
-                await r.text()
+            timeout = aiohttp.ClientTimeout(total=5)
 
-        results["xss"].extend(test_xss(url, params))
-        results["sql"].extend(test_sql(url, params))
+            async with session.get(
+                url,
+                headers=get_headers(),
+                timeout=timeout
+            ) as r:
+                # avoid codec errors on binary content (PDF, images, etc.)
+                try:
+                    await r.text()
+                except UnicodeDecodeError:
+                    await r.read()
+
+        # -----------------------------
+        # Run payload tests in threads
+        # -----------------------------
+        xss = await run_blocking(test_xss, url, params)
+        sql = await run_blocking(test_sql, url, params)
+        err_sql = await run_blocking(test_error_sql, url, params)
+
+        results["xss"].extend(xss)
+        results["sql"].extend(sql)
+        results["sql"].extend(err_sql)
 
     except Exception as e:
         print("[!] Error:", url, str(e))
@@ -72,12 +102,17 @@ async def scan_link(session, url, visited, tested):
     return results
 
 
+# -----------------------------
+# Main async runner
+# -----------------------------
 async def run_async_scan(links):
 
     visited = set()
     tested = set()
 
-    async with aiohttp.ClientSession() as session:
+    connector = aiohttp.TCPConnector(limit=20)
+
+    async with aiohttp.ClientSession(connector=connector) as session:
 
         tasks = [
             scan_link(session, link, visited, tested)
