@@ -8,6 +8,8 @@ import asyncio
 import logging
 import re
 from async_scanner import run_async_scan
+from report_generator import generate_html_report
+from csrf_scanner import scan_csrf
 from form_scanner import scan_forms
 from payload_tester import session, HEADERS
 
@@ -177,39 +179,6 @@ def detect_dom_xss(html):
 
 
 # -----------------------------
-# HTML Report
-# -----------------------------
-def generate_report(data):
-
-    html = f"""
-    <html>
-    <head><title>DSG Report</title></head>
-    <body>
-
-    <h1>DSG Scan Report</h1>
-    <p><b>Target:</b> {data['url']}</p>
-
-    <h2>XSS</h2>
-    <pre>{data['xss_vulnerabilities']}</pre>
-
-    <h2>SQLi</h2>
-    <pre>{data['sql_vulnerabilities']}</pre>
-
-    <h2>Directories</h2>
-    <pre>{data['directories']}</pre>
-
-    <h2>JS Endpoints</h2>
-    <pre>{data['js_endpoints']}</pre>
-
-    </body>
-    </html>
-    """
-
-    with open("reports/report.html", "w") as f:
-        f.write(html)
-
-
-# -----------------------------
 # MAIN
 # -----------------------------
 def scan_url(url):
@@ -235,6 +204,8 @@ def scan_url(url):
 
     print("[+] Scanning forms")
     forms = scan_forms(url)
+    print("[+] Scanning CSRF")
+    csrf = scan_csrf(url)
     redirects = []
 
     # Use a base response for cookie and sensitive data checks, avoid unbound local variable
@@ -274,6 +245,7 @@ def scan_url(url):
 
     result = {
         "url": url,
+        "status_code": base_resp.status_code if base_resp else 0,
         "links_found": links,
         "xss_vulnerabilities": xss_all,
         "sql_vulnerabilities": sql_all,
@@ -281,6 +253,7 @@ def scan_url(url):
         "js_endpoints": js,
         "dom_xss": dom,
         "forms": forms,
+        "csrf": csrf,
         "open_redirects": redirects,
         "subdomains": subs,
         "cookie_issues": cookie_issues,
@@ -288,7 +261,7 @@ def scan_url(url):
         "ssrf": ssrf_vulns
     }
 
-    generate_report(result)
+    generate_html_report(result)
     save_json(result)
     return result
 def save_json(data):

