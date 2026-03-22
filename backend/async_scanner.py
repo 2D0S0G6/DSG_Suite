@@ -1,7 +1,7 @@
 import asyncio
 import aiohttp
 import random
-from payload_tester import test_error_sql, test_xss, test_sql
+from payload_tester import test_error_sql, test_xss, test_sqli
 
 USER_AGENTS = [
     "Mozilla/5.0",
@@ -38,8 +38,8 @@ async def smart_delay():
 # -----------------------------
 # Run blocking code safely
 # -----------------------------
-async def run_blocking(func, *args):
-    return await asyncio.to_thread(func, *args)
+async def run_blocking(func, *args, **kwargs):
+    return await asyncio.to_thread(func, *args, **kwargs)
 
 
 # -----------------------------
@@ -89,8 +89,8 @@ async def scan_link(session, url, visited, tested):
         # Run payload tests in threads
         # -----------------------------
         xss = await run_blocking(test_xss, url, params)
-        sql = await run_blocking(test_sql, url, params)
-        err_sql = await run_blocking(test_error_sql, url, params)
+        sql = await run_blocking(test_sqli, url, params, "get")
+        err_sql = await run_blocking(test_error_sql, url, params, method="get")
 
         results["xss"].extend(xss)
         results["sql"].extend(sql)

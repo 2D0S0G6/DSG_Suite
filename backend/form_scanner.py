@@ -1,7 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
-from payload_tester import test_xss, test_sql
+from payload_tester import test_xss, test_sqli
 
 def get_forms(url):
     try:
@@ -58,7 +58,7 @@ def scan_forms(url):
         if parameters:
 
             xss = test_xss(target_url, parameters)
-            sql = test_sql(target_url, parameters)
+            sql = test_sqli(target_url, parameters, method=details["method"])
 
             results.append({
                 "form_action": target_url,
