@@ -2,6 +2,7 @@ import asyncio
 import aiohttp
 import random
 from payload_tester import test_error_sql, test_xss, test_sqli
+from groq_param_generator import generate_parameters, DEFAULT_COMMON_PARAMS
 
 USER_AGENTS = [
     "Mozilla/5.0",
@@ -51,12 +52,22 @@ async def scan_link(session, url, visited, tested):
         return {"xss": [], "sql": []}
 
     visited.add(url)
+    
+    """
+    visit -> map all urls and params -> check the usage and functinlaity of the params -> test accordingly
+    """
 
     params = extract_params(url)
-    COMMON_PARAMS = ["id", "q", "search", "query", "url"]
 
+    # Use Groq to intelligently generate parameters if none extracted from URL
     if not params:
-        params = COMMON_PARAMS  # 👈 force testing even if no params
+        try:
+            params = generate_parameters(url)
+            # Limit to top 10 most relevant parameters to prevent slow scanning
+            params = params[:10]
+        except Exception as e:
+            print(f"[!] Groq generation failed for {url}, using defaults: {e}")
+            params = DEFAULT_COMMON_PARAMS[:10]  # Limit defaults too
 
     key = url + str(params)
     if key in tested:
@@ -64,7 +75,7 @@ async def scan_link(session, url, visited, tested):
 
     tested.add(key)
 
-    print("[*] Async scanning:", url)
+    print("[*] Async scanning:", url, f"with {len(params)} parameters")
 
     results = {"xss": [], "sql": []}
 
@@ -86,11 +97,32 @@ async def scan_link(session, url, visited, tested):
                     await r.read()
 
         # -----------------------------
-        # Run payload tests in threads
+        # Run payload tests in threads with timeout
         # -----------------------------
-        xss = await run_blocking(test_xss, url, params)
-        sql = await run_blocking(test_sqli, url, params, "get")
-        err_sql = await run_blocking(test_error_sql, url, params, method="get")
+        import asyncio
+        try:
+            xss = await asyncio.wait_for(
+                asyncio.to_thread(test_xss, url, params), 
+                timeout=30  # 30 second timeout per URL
+            )
+            sql = await asyncio.wait_for(
+                asyncio.to_thread(test_sqli, url, params, "get"), 
+                timeout=30
+            )
+            err_sql = await asyncio.wait_for(
+                asyncio.to_thread(test_error_sql, url, params, method="get"), 
+                timeout=30
+            )
+        except asyncio.TimeoutError:
+            print(f"[!] Timeout scanning {url}, skipping...")
+            xss = []
+            sql = []
+            err_sql = []
+        except Exception as e:
+            print(f"[!] Error scanning {url}: {e}")
+            xss = []
+            sql = []
+            err_sql = []
 
         results["xss"].extend(xss)
         results["sql"].extend(sql)

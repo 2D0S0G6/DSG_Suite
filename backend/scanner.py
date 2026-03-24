@@ -17,7 +17,7 @@ logging.basicConfig(filename="scanner.log", level=logging.INFO)
 
 # Limits for crawler
 MAX_DEPTH = 2
-MAX_LINKS = 50
+MAX_LINKS = 20  # Reduced from 50 to speed up scanning
 
 COMMON_DIRS = ["admin", "dashboard", "backup", "config"]
 
@@ -151,9 +151,11 @@ def dir_bruteforce(base):
 
     found = []
 
+    base_url = urlparse(base).scheme + '://' + urlparse(base).netloc
+
     for d in COMMON_DIRS:
 
-        url = f"{base}/{d}"
+        url = f"{base_url}/{d}"
 
         try:
             r = requests.get(url, timeout=3)
@@ -223,7 +225,11 @@ def scan_url(url):
             redirects.append(r)
 
     print("[+] Running async vulnerability scan")
-    xss, sql = asyncio.run(run_async_scan(links))
+    try:
+        xss, sql = asyncio.run(asyncio.wait_for(run_async_scan(links), timeout=300))  # 5 minute timeout
+    except asyncio.TimeoutError:
+        print("[!] Async scan timed out after 5 minutes, proceeding with partial results...")
+        xss, sql = [], []
 
     # include form scan findings in top-level vulnerability counts
     form_xss = []
