@@ -2,7 +2,7 @@ import asyncio
 import aiohttp
 import random
 from payload_tester import test_error_sql, test_xss, test_sqli
-from groq_param_generator import generate_parameters, DEFAULT_COMMON_PARAMS
+from gemini_param_generator import generate_parameters, DEFAULT_COMMON_PARAMS
 
 USER_AGENTS = [
     "Mozilla/5.0",
@@ -59,15 +59,15 @@ async def scan_link(session, url, visited, tested):
 
     params = extract_params(url)
 
-    # Use Groq to intelligently generate parameters if none extracted from URL
+    # Use Gemini to intelligently generate parameters if none extracted from URL
     if not params:
         try:
             params = generate_parameters(url)
-            # Limit to top 10 most relevant parameters to prevent slow scanning
-            params = params[:10]
+            # Limit to top 20 most relevant parameters to improve coverage
+            params = params[:20]
         except Exception as e:
-            print(f"[!] Groq generation failed for {url}, using defaults: {e}")
-            params = DEFAULT_COMMON_PARAMS[:10]  # Limit defaults too
+            print(f"[!] Gemini generation failed for {url}, using defaults: {e}")
+            params = DEFAULT_COMMON_PARAMS[:20]  # Limit defaults too
 
     key = url + str(params)
     if key in tested:

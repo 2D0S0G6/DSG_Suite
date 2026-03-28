@@ -16,19 +16,19 @@
     <h1>DSG Security Scan Report</h1>
 
     <div class="box">
-    <b>Target:</b> https://xss-game.appspot.com/<br>
-    <b>Date:</b> 2026-03-24 10:03:00<br>
+    <b>Target:</b> http://demo.testfire.net<br>
+    <b>Date:</b> 2026-03-28 11:18:42<br>
     <b>Status Code:</b> 0
     </div>
 
     <h2>Links</h2>
     <div class="box">
-    <li>https://xss-game.appspot.com/level1</li><li>https://xss-game.appspot.com/level2</li>
+    <li>http://demo.testfire.net/index.jsp?content=business_lending.htm</li><li>http://demo.testfire.net/index.jsp?content=personal_other.htm</li><li>http://demo.testfire.net/index.jsp?content=inside_contact.htm</li><li>http://demo.testfire.net/feedback.jsp</li><li>http://demo.testfire.net/index.jsp?content=business_other.htm</li><li>http://demo.testfire.net/login.jsp</li><li>http://demo.testfire.net/index.jsp?content=business_deposit.htm</li><li>http://demo.testfire.net/index.jsp?content=business_cards.htm</li><li>http://demo.testfire.net/index.jsp</li><li>http://demo.testfire.net/index.jsp?content=business.htm</li><li>http://demo.testfire.net/index.jsp?content=inside.htm</li><li>http://demo.testfire.net/index.jsp?content=personal_investments.htm</li><li>http://demo.testfire.net/index.jsp?content=personal_deposit.htm</li><li>http://demo.testfire.net/index.jsp?content=personal_loans.htm</li><li>http://demo.testfire.net/index.jsp?content=inside_about.htm</li><li>http://demo.testfire.net/index.jsp?content=business_insurance.htm</li><li>http://demo.testfire.net/index.jsp?content=personal_cards.htm</li><li>http://demo.testfire.net/index.jsp?content=personal.htm</li><li>http://demo.testfire.net/index.jsp?content=business_retirement.htm</li><li>http://demo.testfire.net/index.jsp?content=personal_checking.htm</li>
     </div>
 
     <h2>Directories</h2>
     <div class="box">
-    
+    <li>http://demo.testfire.net/admin</li>
     </div>
 
     <h2>JS Endpoints</h2>
@@ -38,11 +38,21 @@
 
     <h2>Subdomains</h2>
     <div class="box">
-    <li>http://api.xss-game.appspot.com</li><li>http://dev.xss-game.appspot.com</li><li>http://test.xss-game.appspot.com</li><li>http://staging.xss-game.appspot.com</li>
+    
     </div>
 
     <h2 class="vuln">XSS Vulnerabilities</h2>
     <div class="box">
+    
+    <div style="border:1px solid #ccc; padding:5px; margin:5px;">
+    <b>Type:</b> Reflected XSS<br>
+    <b>Parameter:</b> query<br>
+    <b>Payload:</b> <script>alert(1)</script><br>
+    <b>URL:</b> <a href="http://demo.testfire.net/search.jsp?query=<script>alert(1)</script>">http://demo.testfire.net/search.jsp?query=<script>alert(1)</script></a><br>
+    <b>Severity:</b> <span style="color:orange">High</span><br>
+    <b>Explanation:</b> The XSS payload was reflected in the server's response without proper HTML encoding or sanitization in an executable context, allowing potential script execution.<br>
+    <b>Remediation:</b> Implement output encoding (e.g., HTML entity encoding) or use a library like DOMPurify to sanitize user inputs.
+    </div>
     
     </div>
 

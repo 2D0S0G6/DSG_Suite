@@ -1,5 +1,5 @@
 """
-Groq-powered parameter generation for intelligent vulnerability scanning.
+Gemini-powered parameter generation for intelligent vulnerability scanning.
 Uses AI to suggest likely parameters based on URL structure and context.
 """
 
@@ -7,23 +7,36 @@ import json
 import os
 import time
 from dotenv import load_dotenv
-from groq import Groq
+
+# Use Google Gemini-compatible client from google.genai
+# Fallback will continue using default static parameters in case the package is unavailable.
+try:
+    import google.genai as gemini
+except ImportError:
+    gemini = None
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Initialize Groq client with API key from .env
-api_key = os.getenv("GROQ_API_KEY", "")
-client = Groq(api_key=api_key) if api_key else None
+# Initialize Gemini client with API key from .env
+api_key = os.getenv("GEMINI_API_KEY", "")
+gemini_client = None
+if gemini and api_key:
+    try:
+        gemini_client = gemini.Client(api_key=api_key)
+    except Exception:
+        pass
+
+client_available = gemini_client is not None
 
 # Cache to avoid repeated API calls for similar URLs
 PARAM_CACHE = {}
 
-# Rate limiting - don't call Groq more than once per second
+# Rate limiting - don't call Gemini more than once per second
 last_api_call = 0
 API_RATE_LIMIT = 1.0  # seconds between calls
 
-# Default fallback parameters if Groq is unavailable
+# Default fallback parameters if Gemini is unavailable
 DEFAULT_COMMON_PARAMS = [
     "id", "q", "search", "query", "url", "redirect", "page",
     "user", "username", "password", "email", "name", "file",
@@ -32,41 +45,20 @@ DEFAULT_COMMON_PARAMS = [
 ]
 
 
-def generate_parameters_with_groq(url: str, context: dict = None) -> list:
+def generate_parameters_with_gemini(url: str, context: dict = None) -> list:
     """
-    Use Groq to intelligently generate parameters based on URL analysis.
-    
+    Use Gemini to intelligently generate parameters based on URL analysis.
+
     Args:
         url: The target URL to analyze
         context: Optional dict with extracted forms, js endpoints, etc.
-    
+
     Returns:
         List of likely parameters to test
     """
-    if not client or not client.api_key:
-        print("[!] GROQ_API_KEY not configured in .env, using default parameters")
-        print("[!] Set your API key in /backend/.env - Get one from: https://console.groq.com")
-        return DEFAULT_COMMON_PARAMS
-
-    # Check cache first
-    cache_key = url.split("?")[0]  # Use base URL as cache key
-    if cache_key in PARAM_CACHE:
-        return PARAM_CACHE[cache_key]
-
-def generate_parameters_with_groq(url: str, context: dict = None) -> list:
-    """
-    Use Groq to intelligently generate parameters based on URL analysis.
-    
-    Args:
-        url: The target URL to analyze
-        context: Optional dict with extracted forms, js endpoints, etc.
-    
-    Returns:
-        List of likely parameters to test
-    """
-    if not client or not client.api_key:
-        print("[!] GROQ_API_KEY not configured in .env, using default parameters")
-        print("[!] Set your API key in /backend/.env - Get one from: https://console.groq.com")
+    if not client_available:
+        print("[!] GEMINI_API_KEY not configured in .env or generative AI package not installed, using default parameters")
+        print("[!] Set your API key in /backend/.env and install the required package (e.g., google.genai).")
         return DEFAULT_COMMON_PARAMS
 
     # Check cache first
@@ -82,7 +74,7 @@ def generate_parameters_with_groq(url: str, context: dict = None) -> list:
             time.sleep(API_RATE_LIMIT - (current_time - last_api_call))
         last_api_call = time.time()
 
-        # Build context for Groq
+        # Build context for Gemini
         context_str = ""
         if context:
             if "forms" in context:
@@ -92,7 +84,7 @@ def generate_parameters_with_groq(url: str, context: dict = None) -> list:
                         if field.get("name"):
                             form_fields.append(field["name"])
                 context_str += f"\nForm fields found: {form_fields}"
-            
+
             if "js_endpoints" in context:
                 context_str += f"\nJS endpoints: {context['js_endpoints']}"
 
@@ -108,77 +100,73 @@ Return a JSON array of parameter names (strings only, no descriptions). Focus on
 3. Common injection points
 4. Parameters visible in form fields
 
-Return ONLY a JSON array like: ["param1", "param2", "param3"]
-Maximum 10 parameters."""
+Return ONLY a JSON array like: [\"param1\", \"param2\", \"param3\"]
+Maximum 20 parameters."""
 
-        # Try current model first, fallback to another if needed
-        models_to_try = ["llama-3.1-8b-instant", "llama3-8b-8192", "mixtral-8x7b-32768"]
-        
-        for model in models_to_try:
+        models_to_try = []
+        try:
+            all_models = gemini_client.models.list()
+            models_to_try = [m.name for m in all_models if 'gemini' in m.name][:5]
+        except Exception:
+            # If list_models fails, fallback to common names
+            models_to_try = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro']
+
+        if not models_to_try:
+            models_to_try = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro']
+
+        response_text = None
+        for model_name in models_to_try:
             try:
-                message = client.chat.completions.create(
-                    model=model,
-                    max_tokens=500,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ],
-                    timeout=10  # 10 second timeout
-                )
-                break  # Success, exit loop
+                clean_model_name = model_name.replace('models/', '')
+                response = gemini_client.models.generate_content(model=clean_model_name, contents=prompt)
+                response_text = getattr(response, 'text', '')
+                if not response_text:
+                    response_text = str(response)
+                break
             except Exception as model_error:
-                print(f"[!] Model {model} failed: {str(model_error)[:100]}")
-                if model == models_to_try[-1]:  # Last model failed
-                    raise model_error
+                print(f"[!] Model {model_name} failed: {str(model_error)[:100]}")
                 continue
 
-        response_text = message.choices[0].message.content.strip()
-        
+        if not response_text:
+            raise RuntimeError("Gemini response text is empty")
+
         # Parse JSON response
         try:
-            # Try to extract JSON array from response
             json_start = response_text.find('[')
             json_end = response_text.rfind(']') + 1
             if json_start != -1 and json_end > json_start:
                 json_str = response_text[json_start:json_end]
                 params = json.loads(json_str)
-                
-                # Validate and clean
                 params = [str(p).strip() for p in params if isinstance(p, str) and p.strip()]
-                
-                # Cache the result
                 PARAM_CACHE[cache_key] = params
-                
-                print(f"[+] Groq generated {len(params)} parameters for {cache_key}")
+                print(f"[+] Gemini generated {len(params)} parameters for {cache_key}")
                 return params
+            else:
+                print(f"[!] Unable to locate JSON array in Gemini response: {response_text[:120]}")
         except json.JSONDecodeError:
-            print(f"[!] Failed to parse Groq response: {response_text[:100]}")
+            print(f"[!] Failed to parse Gemini response: {response_text[:100]}")
 
     except Exception as e:
-        print(f"[!] Groq API error: {str(e)}")
+        print(f"[!] Gemini API error: {str(e)}")
 
-    # Fallback to defaults
     return DEFAULT_COMMON_PARAMS
 
 
 def generate_parameters(url: str, forms: list = None, js_endpoints: list = None) -> list:
     """
-    Main function to generate parameters - tries Groq first, falls back to defaults.
-    
+    Main function to generate parameters - tries Gemini first, falls back to defaults.
+
     Args:
         url: Target URL
         forms: List of form objects with input fields
         js_endpoints: List of JS endpoints found
-    
+
     Returns:
         List of parameters to test
     """
     context = {}
     params = set(DEFAULT_COMMON_PARAMS)
 
-    # Extract parameters from forms if provided
     if forms:
         context["forms"] = forms
         for form in forms:
@@ -186,7 +174,6 @@ def generate_parameters(url: str, forms: list = None, js_endpoints: list = None)
                 if inp.get("name"):
                     params.add(inp["name"])
 
-    # Extract parameters from URL if present
     if "?" in url:
         query_string = url.split("?")[1]
         for param_pair in query_string.split("&"):
@@ -197,12 +184,11 @@ def generate_parameters(url: str, forms: list = None, js_endpoints: list = None)
     if js_endpoints:
         context["js_endpoints"] = js_endpoints
 
-    # Try Groq enhancement
     try:
-        groq_params = generate_parameters_with_groq(url, context)
-        params.update(groq_params)
+        gemini_params = generate_parameters_with_gemini(url, context)
+        params.update(gemini_params)
     except Exception as e:
-        print(f"[!] Groq generation failed, using form params only: {e}")
+        print(f"[!] Gemini generation failed, using form params only: {e}")
 
     return list(params)
 
