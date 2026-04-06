@@ -1,72 +1,168 @@
 {
-    "url": "http://demo.testfire.net",
-    "status_code": 0,
+    "url": "https://aumsam.amrita.edu/cas/login?service=https%3A%2F%2Faumsam.amrita.edu%2Faums%2FJsp%2FCore_Common%2Findex.jsp",
+    "status_code": 200,
     "links_found": [
-        "http://demo.testfire.net/index.jsp?content=business_lending.htm",
-        "http://demo.testfire.net/index.jsp?content=personal_other.htm",
-        "http://demo.testfire.net/index.jsp?content=inside_contact.htm",
-        "http://demo.testfire.net/feedback.jsp",
-        "http://demo.testfire.net/index.jsp?content=business_other.htm",
-        "http://demo.testfire.net/login.jsp",
-        "http://demo.testfire.net/index.jsp?content=business_deposit.htm",
-        "http://demo.testfire.net/index.jsp?content=business_cards.htm",
-        "http://demo.testfire.net/index.jsp",
-        "http://demo.testfire.net/index.jsp?content=business.htm",
-        "http://demo.testfire.net/index.jsp?content=inside.htm",
-        "http://demo.testfire.net/index.jsp?content=personal_investments.htm",
-        "http://demo.testfire.net/index.jsp?content=personal_deposit.htm",
-        "http://demo.testfire.net/index.jsp?content=personal_loans.htm",
-        "http://demo.testfire.net/index.jsp?content=inside_about.htm",
-        "http://demo.testfire.net/index.jsp?content=business_insurance.htm",
-        "http://demo.testfire.net/index.jsp?content=personal_cards.htm",
-        "http://demo.testfire.net/index.jsp?content=personal.htm",
-        "http://demo.testfire.net/index.jsp?content=business_retirement.htm",
-        "http://demo.testfire.net/index.jsp?content=personal_checking.htm"
+        "https://aumsam.amrita.edu/opac/biblio/journalOpacSearch?searchYN=N",
+        "https://aumsam.amrita.edu/aums/ForgotPassword.jsp",
+        "https://aumsam.amrita.edu/opac/biblio/journalOpacAdvancedSearch?searchYN=N",
+        "https://aumsam.amrita.edu/opac/biblio/opacSearch?searchYN=N",
+        "https://aumsam.amrita.edu/aums/Jsp/Core_Common/index.jsp",
+        "https://aumsam.amrita.edu/opac/biblio/opacAdvancedSearch?searchYN=N"
     ],
-    "xss_vulnerabilities": [
-        {
-            "type": "Reflected XSS",
-            "parameter": "query",
-            "payload": "<script>alert(1)</script>",
-            "url": "http://demo.testfire.net/search.jsp?query=<script>alert(1)</script>",
-            "explanation": "The XSS payload was reflected in the server's response without proper HTML encoding or sanitization in an executable context, allowing potential script execution.",
-            "severity": "High",
-            "remediation": "Implement output encoding (e.g., HTML entity encoding) or use a library like DOMPurify to sanitize user inputs."
-        }
-    ],
+    "xss_vulnerabilities": [],
     "sql_vulnerabilities": [],
-    "directories": [
-        "http://demo.testfire.net/admin"
-    ],
+    "directories": [],
     "js_endpoints": [],
     "dom_xss": [],
     "forms": [
         {
-            "form_action": "http://demo.testfire.net/search.jsp",
-            "method": "get",
+            "form_action": "https://aumsam.amrita.edu/cas/login?service=https%3A%2F%2Faumsam.amrita.edu%2Faums%2FJsp%2FCore_Common%2Findex.jsp",
+            "method": "post",
             "parameters": [
-                "query"
+                "username",
+                "password",
+                "execution",
+                "_eventId",
+                "submit"
             ],
-            "xss": [
-                {
-                    "type": "Reflected XSS",
-                    "parameter": "query",
-                    "payload": "<script>alert(1)</script>",
-                    "url": "http://demo.testfire.net/search.jsp?query=<script>alert(1)</script>",
-                    "explanation": "The XSS payload was reflected in the server's response without proper HTML encoding or sanitization in an executable context, allowing potential script execution.",
-                    "severity": "High",
-                    "remediation": "Implement output encoding (e.g., HTML entity encoding) or use a library like DOMPurify to sanitize user inputs."
-                }
+            "xss": [],
+            "sql": []
+        },
+        {
+            "form_action": "https://aumsam.amrita.edu/opac/biblio/journalOpacSearch",
+            "method": "post",
+            "parameters": [
+                "critValue1"
             ],
+            "xss": [],
+            "sql": []
+        },
+        {
+            "form_action": "https://aumsam.amrita.edu/aums/ResetPasswordServlet",
+            "method": "post",
+            "parameters": [
+                "username",
+                "Email",
+                "dob"
+            ],
+            "xss": [],
+            "sql": []
+        },
+        {
+            "form_action": "https://aumsam.amrita.edu/opac/biblio/journalOpacAdvancedSearch?searchYN=N",
+            "method": "post",
+            "parameters": [
+                "critValue1",
+                "critValue2",
+                "critValue3"
+            ],
+            "xss": [],
+            "sql": []
+        },
+        {
+            "form_action": "https://aumsam.amrita.edu/opac/biblio/opacSearch",
+            "method": "post",
+            "parameters": [
+                "critValue1"
+            ],
+            "xss": [],
+            "sql": []
+        },
+        {
+            "form_action": "https://aumsam.amrita.edu/cas/login?service=https%3A%2F%2Faumsam.amrita.edu%2Faums%2FJsp%2FCore_Common%2Findex.jsp",
+            "method": "post",
+            "parameters": [
+                "username",
+                "password",
+                "execution",
+                "_eventId",
+                "submit"
+            ],
+            "xss": [],
+            "sql": []
+        },
+        {
+            "form_action": "https://aumsam.amrita.edu/opac/biblio/opacAdvancedSearch?searchYN=N",
+            "method": "post",
+            "parameters": [
+                "critValue1",
+                "critValue2",
+                "critValue3"
+            ],
+            "xss": [],
             "sql": []
         }
     ],
-    "csrf": [],
+    "csrf": [
+        {
+            "type": "CSRF Vulnerability",
+            "url": "https://aumsam.amrita.edu/cas/login?service=https%3A%2F%2Faumsam.amrita.edu%2Faums%2FJsp%2FCore_Common%2Findex.jsp",
+            "method": "post",
+            "explanation": "The form does not include a CSRF token, allowing attackers to trick users into performing unwanted actions.",
+            "severity": "Medium",
+            "remediation": "Add a unique CSRF token to each form and validate it on the server side."
+        },
+        {
+            "type": "CSRF Vulnerability",
+            "url": "https://aumsam.amrita.edu/opac/biblio/journalOpacSearch",
+            "method": "post",
+            "explanation": "The form does not include a CSRF token, allowing attackers to trick users into performing unwanted actions.",
+            "severity": "Medium",
+            "remediation": "Add a unique CSRF token to each form and validate it on the server side."
+        },
+        {
+            "type": "CSRF Vulnerability",
+            "url": "https://aumsam.amrita.edu/aums/ResetPasswordServlet",
+            "method": "post",
+            "explanation": "The form does not include a CSRF token, allowing attackers to trick users into performing unwanted actions.",
+            "severity": "Medium",
+            "remediation": "Add a unique CSRF token to each form and validate it on the server side."
+        },
+        {
+            "type": "CSRF Vulnerability",
+            "url": "https://aumsam.amrita.edu/opac/biblio/journalOpacAdvancedSearch?searchYN=N",
+            "method": "post",
+            "explanation": "The form does not include a CSRF token, allowing attackers to trick users into performing unwanted actions.",
+            "severity": "Medium",
+            "remediation": "Add a unique CSRF token to each form and validate it on the server side."
+        },
+        {
+            "type": "CSRF Vulnerability",
+            "url": "https://aumsam.amrita.edu/opac/biblio/opacSearch",
+            "method": "post",
+            "explanation": "The form does not include a CSRF token, allowing attackers to trick users into performing unwanted actions.",
+            "severity": "Medium",
+            "remediation": "Add a unique CSRF token to each form and validate it on the server side."
+        },
+        {
+            "type": "CSRF Vulnerability",
+            "url": "https://aumsam.amrita.edu/cas/login?service=https%3A%2F%2Faumsam.amrita.edu%2Faums%2FJsp%2FCore_Common%2Findex.jsp",
+            "method": "post",
+            "explanation": "The form does not include a CSRF token, allowing attackers to trick users into performing unwanted actions.",
+            "severity": "Medium",
+            "remediation": "Add a unique CSRF token to each form and validate it on the server side."
+        },
+        {
+            "type": "CSRF Vulnerability",
+            "url": "https://aumsam.amrita.edu/opac/biblio/opacAdvancedSearch?searchYN=N",
+            "method": "post",
+            "explanation": "The form does not include a CSRF token, allowing attackers to trick users into performing unwanted actions.",
+            "severity": "Medium",
+            "remediation": "Add a unique CSRF token to each form and validate it on the server side."
+        }
+    ],
     "open_redirects": [],
     "subdomains": [],
     "cookie_issues": [
         "Missing HttpOnly",
         "Missing Secure"
+    ],
+    "security_header_issues": [
+        "Missing Content-Security-Policy",
+        "Missing Referrer-Policy",
+        "Missing Strict-Transport-Security",
+        "Missing X-Content-Type-Options",
+        "Missing X-Frame-Options"
     ],
     "sensitive_data": [],
     "ssrf": []

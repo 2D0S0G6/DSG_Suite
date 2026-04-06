@@ -10,7 +10,7 @@ USER_AGENTS = [
     "Safari/537.36"
 ]
 
-SEM = asyncio.Semaphore(10)
+SEM = asyncio.Semaphore(5) # Reduced concurrency to avoid WAF rate-limiting
 
 
 def get_headers():
@@ -142,9 +142,9 @@ async def run_async_scan(links):
     visited = set()
     tested = set()
 
-    connector = aiohttp.TCPConnector(limit=20)
+    connector = aiohttp.TCPConnector(limit=10, ssl=False) # Reduced limit and disabled SSL validation
 
-    async with aiohttp.ClientSession(connector=connector) as session:
+    async with aiohttp.ClientSession(connector=connector, trust_env=True) as session:
 
         tasks = [
             scan_link(session, link, visited, tested)

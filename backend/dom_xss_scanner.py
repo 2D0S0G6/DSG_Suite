@@ -18,7 +18,7 @@ def scan_dom_xss(url):
 
     try:
 
-        r = requests.get(url, timeout=5)
+        r = requests.get(url, timeout=5, verify=False)
 
         soup = BeautifulSoup(r.text, "html.parser")
 

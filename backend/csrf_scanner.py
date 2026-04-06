@@ -9,7 +9,7 @@ def scan_csrf(url):
     vulnerabilities = []
 
     try:
-        response = requests.get(url, timeout=5)
+        response = requests.get(url, timeout=5, verify=False)
         soup = BeautifulSoup(response.text, "html.parser")
 
         forms = soup.find_all("form")

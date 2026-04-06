@@ -51,6 +51,16 @@ def generate_html_report(data):
     {''.join(f"<li>{s}</li>" for s in data['subdomains'])}
     </div>
 
+    <h2>Security Header Issues</h2>
+    <div class="box">
+    {''.join(f"<li>{h}</li>" for h in data.get('security_header_issues', []))}
+    </div>
+
+    <h2>Cookie Security Issues</h2>
+    <div class="box">
+    {''.join(f"<li>{c}</li>" for c in data.get('cookie_issues', []))}
+    </div>
+
     <h2 class="vuln">XSS Vulnerabilities</h2>
     <div class="box">
     {''.join(f"""
@@ -99,6 +109,16 @@ def generate_html_report(data):
     <b>Remediation:</b> {v.get('remediation', 'No remediation advice.')}
     </div>
     """ for v in data.get('csrf', []))}
+    </div>
+
+    <h2 class="vuln">Open Redirects</h2>
+    <div class="box">
+    {''.join(f"<li>{r['url']} ({r['parameter']})</li>" for r in data.get('open_redirects', []))}
+    </div>
+
+    <h2 class="vuln">SSRF Findings</h2>
+    <div class="box">
+    {''.join(f"<li>{s['url']} ({s['parameter']})</li>" for s in data.get('ssrf', []))}
     </div>
 
     </body>

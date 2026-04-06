@@ -1,7 +1,8 @@
-import requests
 import re
+import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
+from payload_tester import HEADERS
 
 API_PATTERNS = [
     r"/api/[a-zA-Z0-9_/]+",
@@ -15,7 +16,7 @@ def extract_js_endpoints(url):
     endpoints = set()
 
     try:
-        r = requests.get(url, timeout=5)
+        r = requests.get(url, timeout=5, verify=False, headers=HEADERS)
         soup = BeautifulSoup(r.text, "html.parser")
 
         # External JS files
@@ -26,7 +27,7 @@ def extract_js_endpoints(url):
             js_url = urljoin(url, s["src"])
 
             try:
-                js = requests.get(js_url, timeout=5).text
+                js = requests.get(js_url, timeout=5, verify=False, headers=HEADERS).text
 
                 for pattern in API_PATTERNS:
                     matches = re.findall(pattern, js)

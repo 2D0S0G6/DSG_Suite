@@ -5,7 +5,7 @@ from payload_tester import test_xss, test_sqli
 
 def get_forms(url):
     try:
-        response = requests.get(url, timeout=5)
+        response = requests.get(url, timeout=5, verify=False)
         soup = BeautifulSoup(response.text, "html.parser")
         return soup.find_all("form")
     except:

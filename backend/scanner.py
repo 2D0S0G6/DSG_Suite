@@ -1,23 +1,28 @@
-import json
-
-from flask import redirect
-import requests
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
 import asyncio
+import json
 import logging
 import re
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
+
+import requests
+from bs4 import BeautifulSoup
+
 from async_scanner import run_async_scan
-from report_generator import generate_html_report
 from csrf_scanner import scan_csrf
+from dom_xss_scanner import scan_dom_xss
 from form_scanner import scan_forms
-from payload_tester import session, HEADERS
+from js_endpoint_extractor import extract_js_endpoints
+from payload_tester import HEADERS, session
+from report_generator import generate_html_report
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logging.basicConfig(filename="scanner.log", level=logging.INFO)
 
 # Limits for crawler
-MAX_DEPTH = 2
-MAX_LINKS = 20  # Reduced from 50 to speed up scanning
+MAX_DEPTH = 3
+MAX_LINKS = 100  # Increased for real-world coverage
 
 COMMON_DIRS = ["admin", "dashboard", "backup", "config"]
 
@@ -110,39 +115,110 @@ def is_same_domain(url1, url2):
 
 
 # -----------------------------
-# JS endpoint discovery
+# URL and header helpers
 # -----------------------------
 
+def normalize_url_query(url, param, payload):
+    parsed = urlparse(url)
+    params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    params[param] = payload
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(params, doseq=True), parsed.fragment))
 
-def extract_js_endpoints(html):
 
-    endpoints = []
+def extract_query_parameters(url):
+    if "?" not in url:
+        return []
 
-    for line in html.split("\n"):
-        if "/api/" in line or ".json" in line:
-            endpoints.append(line.strip())
+    parsed = urlparse(url)
+    params = []
 
-    return endpoints
+    for key, _ in parse_qsl(parsed.query, keep_blank_values=True):
+        if key and key not in params:
+            params.append(key)
 
-def test_open_redirect(url, param):
+    return params
 
+def analyze_security_headers(headers):
+    issues = []
+
+    expected = {
+        "strict-transport-security": "Strict-Transport-Security",
+        "x-frame-options": "X-Frame-Options",
+        "x-content-type-options": "X-Content-Type-Options",
+        "content-security-policy": "Content-Security-Policy",
+        "referrer-policy": "Referrer-Policy"
+    }
+
+    for lower_name, header_name in expected.items():
+        if header_name not in headers:
+            issues.append(f"Missing {header_name}")
+
+    return issues
+
+
+def test_open_redirect(url):
     payload = "https://evil.com"
-    test_url = f"{url.split('?')[0]}?{param}={payload}"
+    open_redirect_params = ["redirect", "url", "next", "return", "dest", "destination", "rurl"]
+    results = []
+    params = extract_query_parameters(url)
 
-    try:
-        r = requests.get(test_url, allow_redirects=False, timeout=5)
+    for param in params:
+        if param.lower() not in open_redirect_params and not param.lower().endswith("url"):
+            continue
 
-        if "Location" in r.headers and payload in r.headers["Location"]:
-            return {
-                "type": "Open Redirect",
-                "url": test_url,
-                "parameter": param
-            }
+        test_url = normalize_url_query(url, param, payload)
 
-    except:
-        pass
+        try:
+            r = requests.get(test_url, allow_redirects=False, timeout=8, verify=False)
+            location = r.headers.get("Location", "")
 
-    return None
+            if payload in location:
+                results.append({
+                    "type": "Open Redirect",
+                    "url": test_url,
+                    "parameter": param,
+                    "evidence": location,
+                    "severity": "High",
+                    "explanation": "The application reflects a redirect destination directly from a query parameter without validation.",
+                    "remediation": "Validate redirect destinations against an allow-list or use relative paths only."
+                })
+
+        except Exception:
+            pass
+
+    return results
+
+
+def test_ssrf(url):
+    payload = "http://127.0.0.1"
+    ssrf_params = ["url", "uri", "path", "endpoint", "target", "redirect"]
+    results = []
+    params = extract_query_parameters(url)
+
+    for param in params:
+        if param.lower() not in ssrf_params and not param.lower().endswith("url"):
+            continue
+
+        test_url = normalize_url_query(url, param, payload)
+
+        try:
+            r = requests.get(test_url, timeout=10, verify=False)
+
+            if payload in r.text or payload in r.url:
+                results.append({
+                    "type": "SSRF",
+                    "url": test_url,
+                    "parameter": param,
+                    "evidence": "Localhost URL reflected or requested",
+                    "severity": "High",
+                    "explanation": "A parameter appears to accept arbitrary URLs and may allow server-side request forgery.",
+                    "remediation": "Validate URL input and restrict outbound requests to known safe domains."
+                })
+
+        except Exception:
+            pass
+
+    return results
 
 # -----------------------------
 # Directory brute force
@@ -158,7 +234,7 @@ def dir_bruteforce(base):
         url = f"{base_url}/{d}"
 
         try:
-            r = requests.get(url, timeout=3)
+            r = requests.get(url, timeout=3, verify=False)
 
             if r.status_code == 200:
                 print("[+] Directory found:", url)
@@ -173,60 +249,95 @@ def dir_bruteforce(base):
 # -----------------------------
 # DOM XSS detection
 # -----------------------------
-def detect_dom_xss(html):
 
-    patterns = ["document.write", "innerHTML", "eval(", "location"]
+# -----------------------------
+# Page scanning helpers
+# -----------------------------
 
-    return [p for p in patterns if p in html]
+def fetch_page(url):
+    try:
+        return session.get(url, headers=HEADERS, timeout=10)
+    except Exception as e:
+        print("[!] Page fetch error:", url, str(e))
+        return None
+
+
+def scan_page(url):
+    page_data = {
+        "forms": [],
+        "csrf": [],
+        "dom_xss": [],
+        "js_endpoints": [],
+        "security_headers": [],
+        "cookie_issues": []
+    }
+
+    response = fetch_page(url)
+    if not response or response.status_code != 200:
+        return page_data
+
+    if "text/html" not in response.headers.get("Content-Type", ""):
+        return page_data
+
+    page_data["forms"] = scan_forms(url)
+    page_data["csrf"] = scan_csrf(url)
+    page_data["dom_xss"] = scan_dom_xss(url)
+    page_data["js_endpoints"] = extract_js_endpoints(url)
+    page_data["security_headers"] = analyze_security_headers(response.headers)
+    page_data["cookie_issues"] = analyze_cookies(response.headers)
+
+    return page_data
 
 
 # -----------------------------
 # MAIN
 # -----------------------------
 def scan_url(url):
-    
     print("[+] Discovering subdomains")
     subs = find_subdomains(url)
+
     print("\n[+] Crawling site")
     links = crawl_links(url)
-    print("[+] Testing SSRF")
-    ssrf_vulns = []
 
-    for link in links:
-        r = test_ssrf(link)
-        if r:
-            ssrf_vulns.append(r)
-    print("[+] Links discovered:", len(links))
+    pages = [url] + [link for link in links if link != url]
+    print("[+] Pages to inspect:", len(pages))
 
-    print("[+] Extracting JS endpoints")
-    js = extract_js_endpoints(url)
+    all_js_endpoints = set()
+    all_forms = []
+    all_csrf = []
+    all_dom_xss = []
+    all_header_issues = set()
+    all_cookie_issues = set()
+
+    for page in pages:
+        print("[DEBUG] Inspecting page:", page)
+        page_data = scan_page(page)
+
+        all_js_endpoints.update(page_data["js_endpoints"])
+        all_forms.extend(page_data["forms"])
+        all_csrf.extend(page_data["csrf"])
+        all_dom_xss.extend(page_data["dom_xss"])
+        all_header_issues.update(page_data["security_headers"])
+        all_cookie_issues.update(page_data["cookie_issues"])
 
     print("[+] Running directory brute force")
     dirs = dir_bruteforce(url)
 
-    print("[+] Scanning forms")
-    forms = scan_forms(url)
-    print("[+] Scanning CSRF")
-    csrf = scan_csrf(url)
+    if pages:
+        base_resp = fetch_page(url)
+    else:
+        base_resp = None
+
+    print("[+] Scanning for open redirects and SSRF")
     redirects = []
-
-    # Use a base response for cookie and sensitive data checks, avoid unbound local variable
-    base_resp = None
-    try:
-        base_resp = requests.get(url, timeout=5, proxies=PROXIES, verify=False)
-    except:
-        pass
-
-    cookie_issues = analyze_cookies(base_resp.headers if base_resp else {})
-
-    for link in links:
-        r = test_open_redirect(link)
-        if r:
-            redirects.append(r)
+    ssrf_vulns = []
+    for page in pages:
+        redirects.extend(test_open_redirect(page) or [])
+        ssrf_vulns.extend(test_ssrf(page) or [])
 
     print("[+] Running async vulnerability scan")
     try:
-        xss, sql = asyncio.run(asyncio.wait_for(run_async_scan(links), timeout=300))  # 5 minute timeout
+        xss, sql = asyncio.run(asyncio.wait_for(run_async_scan(pages), timeout=300))
     except asyncio.TimeoutError:
         print("[!] Async scan timed out after 5 minutes, proceeding with partial results...")
         xss, sql = [], []
@@ -234,7 +345,7 @@ def scan_url(url):
     # include form scan findings in top-level vulnerability counts
     form_xss = []
     form_sql = []
-    for f in forms:
+    for f in all_forms:
         form_xss.extend(f.get("xss", []))
         form_sql.extend(f.get("sql", []))
 
@@ -242,12 +353,6 @@ def scan_url(url):
     sql_all = sql + form_sql
 
     sensitive = detect_sensitive_data(base_resp.text if base_resp else "")
-    dom = []
-    try:
-        r = requests.get(url)
-        dom = detect_dom_xss(r.text)
-    except:
-        pass
 
     result = {
         "url": url,
@@ -256,13 +361,14 @@ def scan_url(url):
         "xss_vulnerabilities": xss_all,
         "sql_vulnerabilities": sql_all,
         "directories": dirs,
-        "js_endpoints": js,
-        "dom_xss": dom,
-        "forms": forms,
-        "csrf": csrf,
+        "js_endpoints": sorted(all_js_endpoints),
+        "dom_xss": all_dom_xss,
+        "forms": all_forms,
+        "csrf": all_csrf,
         "open_redirects": redirects,
         "subdomains": subs,
-        "cookie_issues": cookie_issues,
+        "cookie_issues": sorted(all_cookie_issues),
+        "security_header_issues": sorted(all_header_issues),
         "sensitive_data": sensitive,
         "ssrf": ssrf_vulns
     }
@@ -270,11 +376,12 @@ def scan_url(url):
     generate_html_report(result)
     save_json(result)
     return result
-def save_json(data):
 
+def save_json(data):
     with open("reports/report.json", "w") as f:
         json.dump(data, f, indent=4)
-        
+
+
 def find_subdomains(url):
 
     from urllib.parse import urlparse
@@ -290,7 +397,7 @@ def find_subdomains(url):
         sub_url = f"http://{s}.{domain}"
 
         try:
-            r = requests.get(sub_url, timeout=3)
+            r = requests.get(sub_url, timeout=3, verify=False)
 
             if r.status_code < 400:
                 print("[+] Subdomain found:", sub_url)
@@ -300,45 +407,6 @@ def find_subdomains(url):
             pass
 
     return found
-def test_open_redirect(url):
-
-    payload = "https://evil.com"
-
-    if "?" not in url:
-        return None
-
-    test_url = url + "&redirect=" + payload
-
-    try:
-        r = requests.get(test_url, allow_redirects=False)
-
-        if "evil.com" in r.headers.get("Location", ""):
-            return test_url
-
-    except:
-        pass
-
-    return None
-
-def test_ssrf(url):
-
-    payload = "http://127.0.0.1"
-
-    if "?" not in url:
-        return None
-
-    test_url = url + "&url=" + payload
-
-    try:
-        r = requests.get(test_url, timeout=5)
-
-        if "127.0.0.1" in r.text:
-            return test_url
-
-    except:
-        pass
-
-    return None
 
 def analyze_cookies(headers):
 
