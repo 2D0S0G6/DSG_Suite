@@ -2,7 +2,7 @@ flask
 requests
 beautifulsoup4
 aiohttp
-# Use Google Gemini-compatible client for LLM parameter suggestions
-google-generativeai
+# Use Google Gemini with modern google.genai SDK
+google-genai
 urllib3
 python-dotenv

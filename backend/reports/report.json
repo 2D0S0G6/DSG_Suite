@@ -1,169 +1,27 @@
 {
-    "url": "https://aumsam.amrita.edu/cas/login?service=https%3A%2F%2Faumsam.amrita.edu%2Faums%2FJsp%2FCore_Common%2Findex.jsp",
-    "status_code": 200,
-    "links_found": [
-        "https://aumsam.amrita.edu/opac/biblio/journalOpacSearch?searchYN=N",
-        "https://aumsam.amrita.edu/aums/ForgotPassword.jsp",
-        "https://aumsam.amrita.edu/opac/biblio/journalOpacAdvancedSearch?searchYN=N",
-        "https://aumsam.amrita.edu/opac/biblio/opacSearch?searchYN=N",
-        "https://aumsam.amrita.edu/aums/Jsp/Core_Common/index.jsp",
-        "https://aumsam.amrita.edu/opac/biblio/opacAdvancedSearch?searchYN=N"
-    ],
+    "url": "https://aumsam.amrita.edu",
+    "status_code": 0,
+    "links_found": [],
     "xss_vulnerabilities": [],
     "sql_vulnerabilities": [],
     "directories": [],
     "js_endpoints": [],
     "dom_xss": [],
-    "forms": [
-        {
-            "form_action": "https://aumsam.amrita.edu/cas/login?service=https%3A%2F%2Faumsam.amrita.edu%2Faums%2FJsp%2FCore_Common%2Findex.jsp",
-            "method": "post",
-            "parameters": [
-                "username",
-                "password",
-                "execution",
-                "_eventId",
-                "submit"
-            ],
-            "xss": [],
-            "sql": []
-        },
-        {
-            "form_action": "https://aumsam.amrita.edu/opac/biblio/journalOpacSearch",
-            "method": "post",
-            "parameters": [
-                "critValue1"
-            ],
-            "xss": [],
-            "sql": []
-        },
-        {
-            "form_action": "https://aumsam.amrita.edu/aums/ResetPasswordServlet",
-            "method": "post",
-            "parameters": [
-                "username",
-                "Email",
-                "dob"
-            ],
-            "xss": [],
-            "sql": []
-        },
-        {
-            "form_action": "https://aumsam.amrita.edu/opac/biblio/journalOpacAdvancedSearch?searchYN=N",
-            "method": "post",
-            "parameters": [
-                "critValue1",
-                "critValue2",
-                "critValue3"
-            ],
-            "xss": [],
-            "sql": []
-        },
-        {
-            "form_action": "https://aumsam.amrita.edu/opac/biblio/opacSearch",
-            "method": "post",
-            "parameters": [
-                "critValue1"
-            ],
-            "xss": [],
-            "sql": []
-        },
-        {
-            "form_action": "https://aumsam.amrita.edu/cas/login?service=https%3A%2F%2Faumsam.amrita.edu%2Faums%2FJsp%2FCore_Common%2Findex.jsp",
-            "method": "post",
-            "parameters": [
-                "username",
-                "password",
-                "execution",
-                "_eventId",
-                "submit"
-            ],
-            "xss": [],
-            "sql": []
-        },
-        {
-            "form_action": "https://aumsam.amrita.edu/opac/biblio/opacAdvancedSearch?searchYN=N",
-            "method": "post",
-            "parameters": [
-                "critValue1",
-                "critValue2",
-                "critValue3"
-            ],
-            "xss": [],
-            "sql": []
-        }
-    ],
-    "csrf": [
-        {
-            "type": "CSRF Vulnerability",
-            "url": "https://aumsam.amrita.edu/cas/login?service=https%3A%2F%2Faumsam.amrita.edu%2Faums%2FJsp%2FCore_Common%2Findex.jsp",
-            "method": "post",
-            "explanation": "The form does not include a CSRF token, allowing attackers to trick users into performing unwanted actions.",
-            "severity": "Medium",
-            "remediation": "Add a unique CSRF token to each form and validate it on the server side."
-        },
-        {
-            "type": "CSRF Vulnerability",
-            "url": "https://aumsam.amrita.edu/opac/biblio/journalOpacSearch",
-            "method": "post",
-            "explanation": "The form does not include a CSRF token, allowing attackers to trick users into performing unwanted actions.",
-            "severity": "Medium",
-            "remediation": "Add a unique CSRF token to each form and validate it on the server side."
-        },
-        {
-            "type": "CSRF Vulnerability",
-            "url": "https://aumsam.amrita.edu/aums/ResetPasswordServlet",
-            "method": "post",
-            "explanation": "The form does not include a CSRF token, allowing attackers to trick users into performing unwanted actions.",
-            "severity": "Medium",
-            "remediation": "Add a unique CSRF token to each form and validate it on the server side."
-        },
-        {
-            "type": "CSRF Vulnerability",
-            "url": "https://aumsam.amrita.edu/opac/biblio/journalOpacAdvancedSearch?searchYN=N",
-            "method": "post",
-            "explanation": "The form does not include a CSRF token, allowing attackers to trick users into performing unwanted actions.",
-            "severity": "Medium",
-            "remediation": "Add a unique CSRF token to each form and validate it on the server side."
-        },
-        {
-            "type": "CSRF Vulnerability",
-            "url": "https://aumsam.amrita.edu/opac/biblio/opacSearch",
-            "method": "post",
-            "explanation": "The form does not include a CSRF token, allowing attackers to trick users into performing unwanted actions.",
-            "severity": "Medium",
-            "remediation": "Add a unique CSRF token to each form and validate it on the server side."
-        },
-        {
-            "type": "CSRF Vulnerability",
-            "url": "https://aumsam.amrita.edu/cas/login?service=https%3A%2F%2Faumsam.amrita.edu%2Faums%2FJsp%2FCore_Common%2Findex.jsp",
-            "method": "post",
-            "explanation": "The form does not include a CSRF token, allowing attackers to trick users into performing unwanted actions.",
-            "severity": "Medium",
-            "remediation": "Add a unique CSRF token to each form and validate it on the server side."
-        },
-        {
-            "type": "CSRF Vulnerability",
-            "url": "https://aumsam.amrita.edu/opac/biblio/opacAdvancedSearch?searchYN=N",
-            "method": "post",
-            "explanation": "The form does not include a CSRF token, allowing attackers to trick users into performing unwanted actions.",
-            "severity": "Medium",
-            "remediation": "Add a unique CSRF token to each form and validate it on the server side."
-        }
-    ],
+    "forms": [],
+    "csrf": [],
     "open_redirects": [],
     "subdomains": [],
-    "cookie_issues": [
-        "Missing HttpOnly",
-        "Missing Secure"
-    ],
-    "security_header_issues": [
-        "Missing Content-Security-Policy",
-        "Missing Referrer-Policy",
-        "Missing Strict-Transport-Security",
-        "Missing X-Content-Type-Options",
-        "Missing X-Frame-Options"
-    ],
+    "cookie_issues": [],
+    "security_header_issues": [],
     "sensitive_data": [],
-    "ssrf": []
+    "ssrf": [],
+    "idor_vulnerabilities": [],
+    "authorization_flaws": [],
+    "parameter_exploitation": [],
+    "information_leakage": [],
+    "gemini_endpoint_analysis": [],
+    "gemini_stored_xss": [],
+    "gemini_file_uploads": [],
+    "gemini_attack_chains": [],
+    "gemini_hidden_endpoints": []
 }

@@ -1,4 +1,16 @@
+# Virtual Environments
 venv/
-__pycache__/
-*.pyc
+env/
+
+# Secrets and Configs
 .env
+
+# Python Artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Generated Reports & Logs
+reports/
+scanner.log
+*.log
