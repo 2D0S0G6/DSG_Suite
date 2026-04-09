@@ -30,6 +30,20 @@ def form_details(form):
             "name": name
         })
 
+    for textarea_tag in form.find_all("textarea"):
+        name = textarea_tag.attrs.get("name")
+        inputs.append({
+            "type": "textarea",
+            "name": name
+        })
+
+    for select_tag in form.find_all("select"):
+        name = select_tag.attrs.get("name")
+        inputs.append({
+            "type": "select",
+            "name": name
+        })
+
     details["action"] = action
     details["method"] = method
     details["inputs"] = inputs
@@ -57,7 +71,7 @@ def scan_forms(url):
 
         if parameters:
 
-            xss = test_xss(target_url, parameters)
+            xss = test_xss(target_url, parameters, method=details["method"])
             sql = test_sqli(target_url, parameters, method=details["method"])
 
             results.append({

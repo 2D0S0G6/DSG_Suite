@@ -455,7 +455,7 @@ def scan_response_anomalies(links):
 # 🤖 NEW: GEMINI AI-POWERED SCANNING
 # =====================================================
 
-def scan_with_gemini_endpoint_analysis(links, api_key: str = None) -> list:
+def scan_with_gemini_endpoint_analysis(links, gemini: GeminiAnalyzer = None) -> list:
     """
     Use Gemini AI to intelligently analyze endpoints.
     
@@ -464,10 +464,12 @@ def scan_with_gemini_endpoint_analysis(links, api_key: str = None) -> list:
     print("\n[*] Running Gemini AI endpoint analysis...")
     findings = []
     
-    gemini = GeminiAnalyzer(api_key)
+    if not gemini or not gemini.is_available():
+        print("[!] Gemini not available")
+        return findings
     
-    if not gemini.is_available():
-        print("[!] Gemini not available (set GEMINI_API_KEY)")
+    if gemini.is_rate_limited():
+        print("[!] Gemini rate limited, skipping endpoint analysis")
         return findings
     
     # Filter API endpoints for analysis
@@ -742,11 +744,27 @@ def scan_url(url):
     
     # 🤖 NEW: Gemini AI-powered tests
     print("\n[*] Running Gemini AI analysis...")
-    gemini_endpoint_findings = scan_with_gemini_endpoint_analysis(links)
-    gemini_xss_findings = scan_stored_xss_with_gemini(all_forms, links)
-    gemini_upload_findings = scan_file_uploads_with_gemini(links)
-    gemini_chain_findings = detect_workflow_chains_with_gemini(links, list(all_js_endpoints))
-    gemini_hidden_findings = identify_hidden_endpoints_with_gemini(list(all_js_endpoints))
+    
+    # Check if Gemini is available and not rate limited
+    gemini_available = False
+    test_gemini = GeminiAnalyzer()
+    if test_gemini.is_available() and not test_gemini.is_rate_limited():
+        gemini_available = True
+        gemini_endpoint_findings = scan_with_gemini_endpoint_analysis(links, test_gemini)
+        gemini_xss_findings = scan_stored_xss_with_gemini(all_forms, links)
+        gemini_upload_findings = scan_file_uploads_with_gemini(links)
+        gemini_chain_findings = detect_workflow_chains_with_gemini(links, list(all_js_endpoints))
+        gemini_hidden_findings = identify_hidden_endpoints_with_gemini(list(all_js_endpoints))
+    else:
+        if test_gemini.is_rate_limited():
+            print("[!] Gemini rate limited, skipping AI analysis")
+        else:
+            print("[!] Gemini not available (set GEMINI_API_KEY)")
+        gemini_endpoint_findings = []
+        gemini_xss_findings = []
+        gemini_upload_findings = []
+        gemini_chain_findings = []
+        gemini_hidden_findings = []
     
     # Combine all findings
     security_issues = (idor_findings + auth_findings + param_findings + response_findings + 

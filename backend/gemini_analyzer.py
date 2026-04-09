@@ -34,6 +34,20 @@ class GeminiAnalyzer:
         'gemini-1.5-pro',         # Heavier model if needed
     ]
     
+    # Global rate limiting
+    _last_call_time = 0
+    _min_call_interval = 2  # Minimum seconds between API calls
+    _rate_limited_until = 0  # Timestamp until which we're rate limited
+    
+    def is_rate_limited(self) -> bool:
+        """Check if we're currently rate limited."""
+        return time.time() < GeminiAnalyzer._rate_limited_until
+    
+    def mark_rate_limited(self, duration: int = 600):
+        """Mark as rate limited for the specified duration (default 10 minutes)."""
+        GeminiAnalyzer._rate_limited_until = time.time() + duration
+        logger.warning(f"[!] Marked as rate limited for {duration} seconds")
+    
     def __init__(self, api_key: str = None):
         """
         Initialize Gemini with API key and model selection using new google.genai SDK.
@@ -86,7 +100,7 @@ class GeminiAnalyzer:
         """Check if Gemini is configured and available."""
         return self.client is not None and self.model is not None
     
-    def _safe_generate(self, prompt: str, max_retries: int = 2) -> Optional[str]:
+    def _safe_generate(self, prompt: str, max_retries: int = 5) -> Optional[str]:
         """
         Safely generate content with retry logic for rate limiting.
         
@@ -100,8 +114,17 @@ class GeminiAnalyzer:
         if not self.is_available():
             return None
         
+        # Enforce minimum interval between API calls
+        current_time = time.time()
+        time_since_last_call = current_time - GeminiAnalyzer._last_call_time
+        if time_since_last_call < GeminiAnalyzer._min_call_interval:
+            sleep_time = GeminiAnalyzer._min_call_interval - time_since_last_call
+            logger.debug(f"[*] Enforcing minimum API call interval, sleeping {sleep_time:.1f}s")
+            time.sleep(sleep_time)
+        
         for attempt in range(max_retries + 1):
             try:
+                GeminiAnalyzer._last_call_time = time.time()  # Update last call time
                 # Use the new google.genai SDK API
                 response = self.client.models.generate_content(
                     model=self.model_name,
@@ -132,20 +155,21 @@ class GeminiAnalyzer:
                 error_str = str(e)
                 
                 # Handle rate limiting
-                if "429" in error_str or "quota" in error_str.lower():
+                if "429" in error_str or "quota" in error_str.lower() or "rate limit" in error_str.lower():
                     if attempt < max_retries:
-                        wait_time = (2 ** attempt) * 5  # Exponential backoff: 5s, 10s, 20s
+                        wait_time = (2 ** attempt) * 10  # Exponential backoff: 10s, 20s, 40s, 80s, 160s
                         logger.warning(f"[!] Rate limited. Waiting {wait_time}s before retry...")
                         time.sleep(wait_time)
                         continue
                     else:
                         logger.error(f"[!] Rate limit exceeded after {max_retries} retries")
+                        self.mark_rate_limited()  # Mark as rate limited
                         return None
                 
                 # Handle service unavailable
                 elif "503" in error_str or "service unavailable" in error_str.lower():
                     if attempt < max_retries:
-                        wait_time = (2 ** attempt) * 10
+                        wait_time = (2 ** attempt) * 15  # 15s, 30s, 60s, 120s, 240s
                         logger.warning(f"[!] Service unavailable. Waiting {wait_time}s...")
                         time.sleep(wait_time)
                         continue

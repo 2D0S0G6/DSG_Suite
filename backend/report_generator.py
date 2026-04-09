@@ -197,7 +197,16 @@ def generate_html_report(data):
 
     <h2 class="vuln">DOM XSS</h2>
     <div class="box">
-    {''.join(f"<li>{v}</li>" for v in data['dom_xss'])}
+    {''.join(f"""
+    <div style="border:1px solid #ccc; padding:5px; margin:5px;">
+    <b>Type:</b> {v.get('type', 'Unknown')}<br>
+    <b>Sink:</b> {v.get('sink', 'N/A')}<br>
+    <b>URL:</b> <a href="{v.get('url', '#')}" target="_blank">{v.get('url', 'N/A')}</a><br>
+    <b>Line:</b> {v.get('line', 'N/A')}<br>
+    <b>Severity:</b> <span style="color:{'red' if v.get('severity') == 'High' else 'orange' if v.get('severity') == 'Medium' else 'yellow'}">{v.get('severity', 'Unknown')}</span><br>
+    <b>Explanation:</b> {v.get('explanation', 'No explanation available.')}
+    </div>
+    """ for v in data.get('dom_xss', []))}
     </div>
 
     <h2 class="vuln">CSRF Vulnerabilities</h2>
