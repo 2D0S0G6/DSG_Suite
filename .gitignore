@@ -9,6 +9,13 @@ env/
 __pycache__/
 *.py[cod]
 *$py.class
+.coverage
+.pytest_cache/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
 
 # Generated Reports & Logs
 reports/

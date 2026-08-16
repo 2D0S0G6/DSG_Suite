@@ -1,6 +1,19 @@
 import os
 import json
+import re
 from datetime import datetime
+
+
+def sanitize_filename(url):
+    """Convert URL to safe filename"""
+    # Remove protocol and www
+    name = url.replace("https://", "").replace("http://", "").replace("www.", "")
+    # Replace non-alphanumeric chars with underscore
+    name = re.sub(r'[^a-zA-Z0-9]', '_', name)
+    # Truncate if too long
+    if len(name) > 50:
+        name = name[:50]
+    return name.rstrip('_')
 
 
 def generate_html_report(data):
@@ -8,6 +21,9 @@ def generate_html_report(data):
     os.makedirs("reports", exist_ok=True)
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    target_url = data.get("url", "unknown")
+    safe_name = sanitize_filename(target_url)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     html = f"""
     <html>
@@ -313,14 +329,26 @@ def generate_html_report(data):
     </html>
     """
 
+    # Save with unique filename: report_<sanitized_url>_<timestamp>.html
+    unique_filename = f"report_{safe_name}_{timestamp}.html"
+    with open(f"reports/{unique_filename}", "w") as f:
+        f.write(html)
+    
+    # Also save as report.html for backward compatibility
     with open("reports/report.html", "w") as f:
         f.write(html)
+    
+    return unique_filename
 
 
 def generate_json_report(data):
     """Generate a comprehensive JSON report with all findings"""
     
     os.makedirs("reports", exist_ok=True)
+    
+    target_url = data.get("url", "unknown")
+    safe_name = sanitize_filename(target_url)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     report = {
         "metadata": {
@@ -375,5 +403,13 @@ def generate_json_report(data):
         }
     }
     
+    # Save with unique filename
+    unique_json = f"report_{safe_name}_{timestamp}.json"
+    with open(f"reports/{unique_json}", "w") as f:
+        json.dump(report, f, indent=2)
+    
+    # Also save as report.json for backward compatibility
     with open("reports/report.json", "w") as f:
         json.dump(report, f, indent=2)
+    
+    return unique_json

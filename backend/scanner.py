@@ -2,6 +2,8 @@ import asyncio
 import json
 import logging
 import re
+import os
+from datetime import datetime
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import requests
@@ -13,7 +15,7 @@ from dom_xss_scanner import scan_dom_xss
 from form_scanner import scan_forms
 from js_endpoint_extractor import extract_js_endpoints
 from payload_tester import HEADERS, session
-from report_generator import generate_html_report, generate_json_report
+from report_generator import generate_html_report, generate_json_report, sanitize_filename
 
 # 🔥 NEW: Advanced authorization & workflow testing
 from session_manager import SessionManager
@@ -118,9 +120,19 @@ def crawl_links(start_url):
     return list(links)
 
 
+def get_root_domain(netloc: str) -> str:
+    """Return the root domain (example.com) from a netloc, handling www."""
+    parts = netloc.split(":")[0].split('.')
+    if len(parts) >= 2:
+        return '.'.join(parts[-2:])
+    return netloc
+
+
 def is_same_domain(url1, url2):
     try:
-        return urlparse(url1).netloc == urlparse(url2).netloc
+        n1 = urlparse(url1).netloc
+        n2 = urlparse(url2).netloc
+        return get_root_domain(n1) == get_root_domain(n2)
     except:
         return False
 
@@ -806,8 +818,35 @@ def scan_url(url):
     save_json(result)
     return result
 
+def scan_url_pipeline(url):
+    """Staged pipeline entry point.
+
+    Runs the architecture:
+        URL -> Crawler -> Endpoint discovery -> JS extraction -> Unminify/unbundle
+        -> Chunk/context generation -> RAG -> LLM analysis -> Finding normalization
+        -> Deduplication -> Validation -> JSON/HTML report
+
+    Kept alongside the legacy ``scan_url`` so callers can opt in.
+    """
+    from pipeline import Pipeline, PipelineConfig
+
+    gemini = GeminiAnalyzer()
+    return Pipeline(
+        config=PipelineConfig.from_env(),
+        gemini=gemini if gemini.is_available() else None,
+    ).run(url)
+
+
 def save_json(data):
-    with open("reports/report.json", "w") as f:
+    """Save raw scan result to a timestamped file without overwriting the
+    structured report.json produced by generate_json_report().
+    """
+    os.makedirs("reports", exist_ok=True)
+    target = data.get("url", "unknown")
+    safe_name = sanitize_filename(target)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    raw_filename = f"reports/report_raw_{safe_name}_{timestamp}.json"
+    with open(raw_filename, "w") as f:
         json.dump(data, f, indent=4)
 
 
