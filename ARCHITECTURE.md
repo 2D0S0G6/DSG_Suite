@@ -15,9 +15,10 @@ Who talks to whom.
 ```
         ┌──────────────┐        POST /scan            ┌───────────────────────────┐
         │  Next.js UI  │  ───────────────────────────▶│      Flask API (app.py)   │
-        │ (frontend/)  │        POST /scan/pipeline   │  /scan  /scan/pipeline    │
-        │  :3000       │◀───────────────────────────  │  /history  /reports/<f>   │
-        └──────────────┘        JSON findings         └────────────┬──────────────┘
+        │ (frontend/)  │        POST /scan/pipeline   │  /scan · /scan/pipeline   │
+        │  :3000       │◀───────────────────────────  │  /scan/combined           │
+        └──────────────┘        JSON findings         │  /history · /reports/<f>  │
+                                                       └────────────┬──────────────┘
                                                                     │
                                         ┌───────────────────────────┼───────────────────────────┐
                                         ▼                                                       ▼
@@ -58,11 +59,17 @@ detectors. Findings are tagged by `source` so you can tell which layer produced 
    recommended,        │   URL → … → RAG → LLM/heuristics → normalize → dedup → validate →    │
    testable,           │   report                                                             │
    deterministic       │                                                                      │
+                       │                                                                      │
+   COMBINED (adapter)  │   combined_scan.run_combined()                                       │
+   ─────────────────── │   runs BOTH, merges every finding through the shared backbone →      │
+   best of both:       │   normalize → dedup (cross-engine corroboration) → validate → report │
+   depth + hygiene     │                                                                      │
                        └──────────────────────────────────────────────────────────────────────┘
 ```
 
-Both are reachable from `app.py` (`/scan` = legacy, `/scan/pipeline` = pipeline)
-and share low-level helpers (`payload_tester.session`, `report_generator`).
+All three are reachable from `app.py` (`/scan` = legacy, `/scan/pipeline` =
+pipeline, `/scan/combined` = both merged) and share low-level helpers
+(`payload_tester.session`, `report_generator`, the pipeline `Finding` model).
 
 ---
 
@@ -148,7 +155,54 @@ Pipeline(config, fetch, gemini)
 
 ---
 
-## 5. The AI data-flow (RAG)
+## 5. Combined engine — merging both (`run_combined`)
+
+The tactical adapter that gets depth **and** hygiene: run both engines, then push
+every finding through the pipeline's shared backbone so they converge on one
+report with one confidence model.
+
+```
+   ┌─────────────────────────┐   passive/static + RAG-LLM findings
+   │  Pipeline.run(write=0)   │ ─────────────┐   source: heuristic-rag | gemini-rag
+   └─────────────────────────┘              │
+                                            ▼
+                                     ┌──────────────┐
+   ┌─────────────────────────┐       │ normalize    │  heterogeneous dicts → Finding
+   │  scanner.scan_url()      │       │   (shared)   │
+   │  (active, payload-       │ ────▶ ├──────────────┤
+   │   confirmed findings)    │       │ dedup        │  same fingerprint (type|url|param)?
+   └─────────────────────────┘       │   ┌────────┐ │  → merge, keep strongest severity,
+       source: legacy-active         │   │CORROB. │ │    and if sources differ across
+               legacy-gemini         │   │ boost  │ │    engines → confidence = HIGH
+                                     │   └────────┘ │
+                                     ├──────────────┤
+                                     │ validate     │  drop junk; keep rejects w/ reason
+                                     ├──────────────┤
+                                     │ reporting    │  ONE unified findings.json + html
+                                     └──────┬───────┘
+                                            ▼
+                          payload + engines: {pipeline_findings, legacy_findings,
+                                              combined_unique, corroborated}
+```
+
+**The value:** an LLM-reasoned "this endpoint looks injectable" (`gemini-rag`) and
+an actively-confirmed SQLi (`legacy-active`) that share a fingerprint collapse
+into **one** finding whose confidence is raised because two independent engines
+agree. Passive triage + active confirmation, scored by consensus.
+
+**Offline testability:** `run_combined(run_legacy=False, fetch=<injected>)` runs
+the whole merge path with no network — that's how `test_combined.py` exercises it
+in CI. The legacy half is best-effort; if it errors (needs a live target) the run
+degrades to pipeline-only.
+
+**Known tactical cost:** both engines crawl independently → the target is fetched
+twice. The strategic version makes the legacy detectors *injected pipeline stages*
+sharing one crawl (and lets RAG/LLM triage decide which endpoints get actively
+tested); this adapter keeps both orchestrators intact for a contained change.
+
+---
+
+## 6. The AI data-flow (RAG)
 
 How a single vulnerability class gets analyzed in stage 7.
 
@@ -181,7 +235,7 @@ guarantees output even with no API key. Both feed the same normalization stage.
 
 ---
 
-## 6. Finding lifecycle (how noise becomes a report)
+## 7. Finding lifecycle (how noise becomes a report)
 
 ```
   heterogeneous dicts                canonical                merged                gated
@@ -199,32 +253,36 @@ guarantees output even with no API key. Both feed the same normalization stage.
 
 ---
 
-## 7. Module dependency map (backend)
+## 8. Module dependency map (backend)
 
 ```
-app.py
-  └─ scanner.py ───────────┬─ async_scanner.py ─── payload_tester.py  (XSS/SQLi engine, shared session)
-                           │                   └── gemini_param_generator.py  (AI param discovery)
-                           ├─ form_scanner.py ───── payload_tester.py
-                           ├─ csrf_scanner.py
-                           ├─ dom_xss_scanner.py
-                           ├─ js_endpoint_extractor.py
-                           ├─ idor_scanner.py ─────┐
-                           ├─ authorization_scanner.py ─┼─ session_manager.py  (multi-identity)
-                           ├─ api_parameter_mutator.py ─┘
-                           ├─ response_analyzer.py
-                           ├─ gemini_analyzer.py   (LLM reasoning engine)
-                           ├─ report_generator.py  (HTML/JSON output)
-                           └─ pipeline/  ──────────── orchestrator → 11 stage modules
-                                                      (models.py · config.py shared)
+app.py  (/scan · /scan/pipeline · /scan/combined)
+  ├─ scanner.py ───────────┬─ async_scanner.py ─── payload_tester.py  (XSS/SQLi engine, shared session)
+  │                        │                   └── gemini_param_generator.py  (AI param discovery)
+  │                        ├─ form_scanner.py ───── payload_tester.py
+  │                        ├─ csrf_scanner.py
+  │                        ├─ dom_xss_scanner.py
+  │                        ├─ js_endpoint_extractor.py
+  │                        ├─ idor_scanner.py ─────┐
+  │                        ├─ authorization_scanner.py ─┼─ session_manager.py  (multi-identity)
+  │                        ├─ api_parameter_mutator.py ─┘
+  │                        ├─ response_analyzer.py
+  │                        ├─ gemini_analyzer.py   (LLM reasoning engine)
+  │                        ├─ report_generator.py  (HTML/JSON output)
+  │                        └─ pipeline/  ────────── orchestrator → 11 stage modules
+  │                                                 (models.py · config.py shared)
+  └─ combined_scan.py ─────┬─ pipeline/  (normalize · dedup · validate · reporting — shared backbone)
+                           └─ scanner.scan_url()  (lazy import; legacy active detectors)
 ```
 
 Note: subdomain and directory brute-forcing live **inline** in `scanner.py`
-(`find_subdomains`, `COMMON_DIRS`) rather than as separate modules.
+(`find_subdomains`, `COMMON_DIRS`) rather than as separate modules. `combined_scan.py`
+depends on both `pipeline` and (lazily) `scanner`; the `pipeline` package has **no**
+back-dependency on legacy code, so it stays self-contained and offline-testable.
 
 ---
 
-## 8. Test & CI topology
+## 9. Test & CI topology
 
 ```
   backend/tests/conftest.py

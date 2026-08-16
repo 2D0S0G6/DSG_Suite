@@ -2,7 +2,7 @@ import sys
 import os
 import json
 from flask import Flask, request, jsonify, send_from_directory
-from scanner import scan_url, scan_url_pipeline
+from scanner import scan_url, scan_url_pipeline, scan_url_combined
 
 app = Flask(__name__)
 
@@ -129,6 +129,22 @@ def scan_pipeline():
         return jsonify({"error": "Provide URL"}), 400
 
     result = scan_url_pipeline(data["url"])
+    return jsonify(result)
+
+
+@app.route("/scan/combined", methods=["POST"])
+def scan_combined():
+    """Run both engines and return one unified, deduplicated report.
+
+    The legacy active detectors and the staged pipeline are merged through the
+    shared normalize -> dedup -> validate -> report backbone, so cross-engine
+    corroboration raises confidence (see combined_scan.py).
+    """
+    data = request.get_json()
+    if not data or "url" not in data:
+        return jsonify({"error": "Provide URL"}), 400
+
+    result = scan_url_combined(data["url"])
     return jsonify(result)
 
 

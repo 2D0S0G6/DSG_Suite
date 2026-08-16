@@ -837,6 +837,24 @@ def scan_url_pipeline(url):
     ).run(url)
 
 
+def scan_url_combined(url):
+    """Unified entry point: run the legacy active detectors and the staged
+    pipeline, then merge every finding through the shared
+    normalize -> dedup -> validate -> report backbone (see combined_scan.py).
+
+    Mirrors scan_url() / scan_url_pipeline() so callers can opt in.
+    """
+    from combined_scan import run_combined
+    from pipeline import PipelineConfig
+
+    gemini = GeminiAnalyzer()
+    return run_combined(
+        url,
+        config=PipelineConfig.from_env(),
+        gemini=gemini if gemini.is_available() else None,
+    )
+
+
 def save_json(data):
     """Save raw scan result to a timestamped file without overwriting the
     structured report.json produced by generate_json_report().

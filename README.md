@@ -64,10 +64,10 @@ pentest platform.
 
 ---
 
-## 🧭 The two engines (legacy vs pipeline)
+## 🧭 The engines (legacy · pipeline · combined)
 
-The repo contains **two independent scan engines** that share helpers. Knowing
-which is which prevents confusion when reading the code.
+The repo contains **two independent scan engines** plus a **combined adapter**
+that merges them. Knowing which is which prevents confusion when reading the code.
 
 ### 1. Legacy scanner — `scanner.scan_url()`
 The original monolithic scan. One big function crawls the site, fans out every
@@ -99,7 +99,36 @@ URL → Crawler → Endpoint discovery → JS extraction → Unminify/unbundle
     → Normalization → Deduplication → Validation → JSON/HTML report
 ```
 
-Both engines are reachable from the Flask API and CLI (see [Install & run](#-install--run)).
+### 3. Combined engine — `combined_scan.run_combined()`
+The two engines are strong in opposite halves: the **pipeline** has excellent
+*plumbing* (DI, RAG, `normalize → dedup → validate → report`) but shallow
+detectors; the **legacy** engine has deep *active* detectors (payload-confirmed
+XSS/SQLi, multi-role authz, active IDOR) but no finding hygiene. The combined
+adapter runs both and funnels **every** finding through the pipeline's shared
+backbone, so they converge on one canonical `Finding` stream and one report.
+
+```
+   pipeline findings ─┐
+                      ├─▶ normalize ─▶ dedup ─▶ validate ─▶ ONE unified report
+   legacy findings  ──┘        (cross-engine corroboration: an active-confirmed
+                               finding + an LLM-reasoned one on the same
+                               fingerprint merge and get confidence-boosted)
+```
+
+Why it's *better* than either alone: when a regex-confirmed SQLi and an LLM
+"this endpoint looks injectable" land on the same fingerprint, [`dedup.py`](backend/pipeline/dedup.py)
+merges them and bumps confidence to `high` — active detection **corroborating**
+passive reasoning. The report's `engines` block shows each engine's contribution
+and how many findings were corroborated across both.
+
+> **Tactical costs (documented, by design):** the two engines crawl
+> independently, so a combined run fetches the target twice; the legacy half
+> needs a live target and is best-effort (failures degrade to pipeline-only). The
+> *strategic* version — making the legacy detectors injected pipeline stages that
+> share one crawl — is the natural next step; this adapter keeps both
+> orchestrators intact for a low-risk, contained change.
+
+All three are reachable from the Flask API and CLI (see [Install & run](#-install--run)).
 
 ---
 
@@ -214,12 +243,21 @@ print(result["normalized_findings"])  # flat canonical findings
 report generator **plus** `normalized_findings`, `rejected_findings`, and
 `stages_run`.
 
+### Via the combined engine (both engines, one report)
+```python
+from scanner import scan_url_combined
+result = scan_url_combined("https://demo.testfire.net")
+print(result["engines"])              # {pipeline_findings, legacy_findings, combined_unique, corroborated}
+print(result["normalized_findings"])  # merged + deduplicated across both engines
+```
+
 ### Via the Flask API
 ```bash
 python backend/app.py                      # Flask on :5000
 curl -X POST localhost:5000/scan/pipeline \
      -H 'Content-Type: application/json' \
      -d '{"url":"https://demo.testfire.net"}'
+# or /scan/combined for the merged report from both engines
 ```
 
 ### Via the CLI (legacy engine)
@@ -287,8 +325,9 @@ default (heuristics when Gemini is absent), no heavy ML deps (pure-Python RAG).
 
 | File | Purpose |
 |------|---------|
-| **`app.py`** | Flask API + CLI entry. Routes: `POST /scan` (legacy, flattens findings into a `vulnerabilities[]` list with per-category severities + summary), `POST /scan/pipeline` (staged pipeline), `GET /reports/<file>` (serve reports), `GET /history` (list past JSON reports), `GET /` (health). `run_cli()` prints a summary when invoked with a URL arg. |
-| **`scanner.py`** | Legacy orchestrator. `scan_url()` is the master pipeline (crawl → per-page scan → dir brute → redirect/SSRF → async XSS/SQLi → authz/IDOR modules → Gemini → report). Also hosts `scan_url_pipeline()` (bridge to the new pipeline), the BFS `crawl_links`, scope helpers (`is_same_domain` — note: naive last-two-labels logic, breaks on `co.uk`), `analyze_security_headers`, `analyze_cookies`, `test_open_redirect`, `test_ssrf`, `dir_bruteforce`, `detect_sensitive_data`, and the `scan_*_with_gemini` wrappers. |
+| **`app.py`** | Flask API + CLI entry. Routes: `POST /scan` (legacy, flattens findings into a `vulnerabilities[]` list with per-category severities + summary), `POST /scan/pipeline` (staged pipeline), `POST /scan/combined` (both engines merged), `GET /reports/<file>` (serve reports), `GET /history` (list past JSON reports), `GET /` (health). `run_cli()` prints a summary when invoked with a URL arg. |
+| **`scanner.py`** | Legacy orchestrator. `scan_url()` is the master pipeline (crawl → per-page scan → dir brute → redirect/SSRF → async XSS/SQLi → authz/IDOR modules → Gemini → report). Also hosts `scan_url_pipeline()` (bridge to the pipeline) and `scan_url_combined()` (bridge to the combined engine), the BFS `crawl_links`, scope helpers (`is_same_domain` — note: naive last-two-labels logic, breaks on `co.uk`), `analyze_security_headers`, `analyze_cookies`, `test_open_redirect`, `test_ssrf`, `dir_bruteforce`, `detect_sensitive_data`, and the `scan_*_with_gemini` wrappers. |
+| **`combined_scan.py`** | The combined-engine adapter. `run_combined()` runs the pipeline + legacy `scan_url()`, tags each finding's `source`/`engine`, and funnels both through `normalize → dedup → validate → reporting` into one report. `legacy_raw_findings()` flattens a legacy result dict into raw findings with a canonical `type` (aligned to the pipeline vocabulary so fingerprints collide and corroborate). Adds an `engines` breakdown to the payload. Offline-capable via `run_legacy=False` + injected `fetch`. |
 | **`async_scanner.py`** | Concurrent injection engine. `run_async_scan(links)` uses `aiohttp` + `asyncio.gather` to test all URLs for XSS/SQLi in parallel. Per-URL worker extracts params or, if none, calls the **Gemini param generator** (falls back to `DEFAULT_COMMON_PARAMS`). Blocking `requests`-based detectors are offloaded via `asyncio.to_thread`. Includes UA rotation + jitter + `Semaphore(5)` as light WAF/rate-limit evasion. Feeds `xss_vulnerabilities`/`sql_vulnerabilities`. |
 | **`payload_tester.py`** | **The real XSS/SQLi detection engine** (the `.txt` payload files are just reference corpora). Context-aware XSS (`CANARY`, `determine_contexts`, `is_safe_html_encoding`, `is_executable_context`, `test_xss`) and four-family SQLi (`test_sql`, `test_time_sql`, `test_error_sql`, `test_sqli`) with heavy false-positive-reduction. Exports the shared `session` + `HEADERS` used across the codebase. |
 | **`form_scanner.py`** | Discovers `<form>`s, extracts `<input>/<textarea>/<select>`, and tests them **method-aware** (POST forms get POST-body injection — which the URL-only async scanner can't do). Returns per-form `{xss, sql}`. |
@@ -339,8 +378,8 @@ default (heuristics when Gemini is absent), no heavy ML deps (pure-Python RAG).
 | **`package.json` / `tailwind.config.js` / `next.config.js` / `tsconfig.json`** | Next 14.2.3, React 18, Tailwind 3.4, `lucide-react`, `clsx`, `tailwind-merge`. |
 
 ### Tests — `backend/tests/`
-15 files, one suite per pipeline stage plus an end-to-end orchestrator test.
-Fully offline & deterministic via `conftest.py`:
+One suite per pipeline stage, an end-to-end orchestrator test, and a combined-engine
+suite. Fully offline & deterministic via `conftest.py`:
 - **Injected fetcher**: an in-memory `SITE` dict maps URLs → `(status, ct, body)`,
   seeded with one of each detectable issue (DOM sink, hardcoded key, `http://`
   URL, IDOR-shaped endpoints).
@@ -349,8 +388,9 @@ Fully offline & deterministic via `conftest.py`:
   `Down` stub to exercise the fallback path.
 - Suites: `test_orchestrator` (stage order + e2e), `test_rag` (retrieval ranking),
   `test_validation`, `test_llm_analysis` (gemini vs heuristic source tagging),
-  `test_crawler`, `test_endpoint_discovery`, `test_js_extraction`, `test_unminify`,
-  `test_chunking`, `test_dedup`, `test_normalization`, `test_reporting`.
+  `test_combined` (both-engine merge + **cross-engine corroboration** raising
+  confidence), `test_crawler`, `test_endpoint_discovery`, `test_js_extraction`,
+  `test_unminify`, `test_chunking`, `test_dedup`, `test_normalization`, `test_reporting`.
 
 ### Infra & config
 
@@ -503,7 +543,7 @@ One-paragraph pitch:
 > gate before reporting. AI augments but never gates the scan, and the whole
 > pipeline runs offline in CI with an injected fetcher and a fake LLM.*
 
-Five things to be ready to defend:
+Six things to be ready to defend:
 1. **Why RAG here?** Minified bundles are too big for a prompt; retrieval keeps
    prompts small, focused, cheap, and lowers hallucination surface.
 2. **Why pure-Python TF-IDF instead of embeddings?** Deterministic, no external
@@ -515,6 +555,11 @@ Five things to be ready to defend:
    SQLi; corroboration bump on dedup; LLM `confidence` self-rating.
 5. **What are the AI risks?** Trusting model output as attack input (prompt
    injection), disabled safety filters, non-determinism, unescaped report output.
+6. **How do the two engines combine?** `combined_scan.run_combined` funnels both
+   engines' findings through the shared `normalize → dedup → validate → report`
+   backbone; a shared `type|url|param` fingerprint lets an active-confirmed
+   finding and an LLM-reasoned one **merge and boost each other's confidence** —
+   passive triage + active confirmation, scored by cross-engine consensus.
 
 ---
 
