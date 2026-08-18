@@ -249,12 +249,12 @@ def generate_html_report(data):
     {''.join(f"<li>{s['url']} ({s['parameter']})</li>" for s in data.get('ssrf', []))}
     </div>
 
-    <!-- ⭐ GEMINI AI FINDINGS -->
-    <h2 style="background:#7c3aed; color:white;">⭐ Gemini AI Analysis</h2>
+    <!-- ⭐ GROQ AI FINDINGS -->
+    <h2 style="background:#7c3aed; color:white;">⭐ Groq AI Analysis</h2>
 
-    <h3>🧠 Gemini Endpoint Analysis</h3>
+    <h3>🧠 Groq Endpoint Analysis</h3>
     <div class="box">
-    {f'<p style="color:green; font-weight:bold">✓ No AI endpoint vulnerabilities detected</p>' if not data.get('gemini_endpoint_analysis') else ''.join(f"""
+    {f'<p style="color:green; font-weight:bold">✓ No AI endpoint vulnerabilities detected</p>' if not data.get('groq_endpoint_analysis') else ''.join(f"""
     <div class="finding finding-{v.get('severity', 'medium').lower()}">
     <b>Endpoint:</b> {v.get('endpoint', 'N/A')}<br>
     <b>Vulnerability Type:</b> {v.get('vulnerability_type', 'N/A')}<br>
@@ -264,12 +264,12 @@ def generate_html_report(data):
     <b>Expected Response:</b> {v.get('expected_response', 'N/A')}<br>
     <b>Remediation:</b> {v.get('remediation', 'N/A')}
     </div>
-    """ for v in data.get('gemini_endpoint_analysis', []))}
+    """ for v in data.get('groq_endpoint_analysis', []))}
     </div>
 
-    <h3>🔍 Gemini Stored XSS Hotspots</h3>
+    <h3>🔍 Groq Stored XSS Hotspots</h3>
     <div class="box">
-    {f'<p style="color:green; font-weight:bold">✓ No stored XSS hotspots identified</p>' if not data.get('gemini_stored_xss') else ''.join(f"""
+    {f'<p style="color:green; font-weight:bold">✓ No stored XSS hotspots identified</p>' if not data.get('groq_stored_xss') else ''.join(f"""
     <div class="finding finding-high">
     <b>Form Field:</b> {v.get('form_field', 'N/A')}<br>
     <b>Display Location:</b> {v.get('display_location', 'N/A')}<br>
@@ -278,12 +278,12 @@ def generate_html_report(data):
     <b>Test Payload:</b> <code>{v.get('test_payload', 'N/A')}</code><br>
     <b>Verification Steps:</b> {v.get('verification_steps', 'N/A')}
     </div>
-    """ for v in data.get('gemini_stored_xss', []))}
+    """ for v in data.get('groq_stored_xss', []))}
     </div>
 
-    <h3>📤 Gemini File Upload Analysis</h3>
+    <h3>📤 Groq File Upload Analysis</h3>
     <div class="box">
-    {f'<p style="color:green; font-weight:bold">✓ No upload vulnerabilities detected</p>' if not data.get('gemini_file_uploads') else ''.join(f"""
+    {f'<p style="color:green; font-weight:bold">✓ No upload vulnerabilities detected</p>' if not data.get('groq_file_uploads') else ''.join(f"""
     <div class="finding finding-{v.get('risk_level', 'medium').lower().replace('high', 'high').replace('critical', 'critical')}">
     <b>Upload Endpoint:</b> {v.get('endpoint', 'N/A')}<br>
     <b>Vulnerability Type:</b> {v.get('vulnerability_type', 'N/A')}<br>
@@ -293,12 +293,12 @@ def generate_html_report(data):
     <b>Bypass Technique:</b> {v.get('bypass_technique', 'N/A')}<br>
     <b>Impact:</b> {v.get('impact', 'N/A')}
     </div>
-    """ for v in data.get('gemini_file_uploads', []))}
+    """ for v in data.get('groq_file_uploads', []))}
     </div>
 
-    <h3>🔗 Gemini Attack Chain Detection</h3>
+    <h3>🔗 Groq Attack Chain Detection</h3>
     <div class="box">
-    {f'<p style="color:green; font-weight:bold">✓ No multi-step attack chains detected</p>' if not data.get('gemini_attack_chains') else ''.join(f"""
+    {f'<p style="color:green; font-weight:bold">✓ No multi-step attack chains detected</p>' if not data.get('groq_attack_chains') else ''.join(f"""
     <div class="finding finding-critical">
     <b>Chain Name:</b> {v.get('chain_name', 'N/A')}<br>
     <b>Severity:</b> <span class="critical">{v.get('severity', 'Critical')}</span><br>
@@ -308,12 +308,12 @@ def generate_html_report(data):
     <b>Final Impact:</b> {v.get('impact', 'N/A')}<br>
     <b>Remediation:</b> {v.get('remediation', 'N/A')}
     </div>
-    """ for v in data.get('gemini_attack_chains', []))}
+    """ for v in data.get('groq_attack_chains', []))}
     </div>
 
-    <h3>🕵️ Gemini Hidden Endpoints Discovery</h3>
+    <h3>🕵️ Groq Hidden Endpoints Discovery</h3>
     <div class="box">
-    {f'<p style="color:green; font-weight:bold">✓ No hidden endpoints detected</p>' if not data.get('gemini_hidden_endpoints') else ''.join(f"""
+    {f'<p style="color:green; font-weight:bold">✓ No hidden endpoints detected</p>' if not data.get('groq_hidden_endpoints') else ''.join(f"""
     <div class="finding finding-high">
     <b>Endpoint:</b> {v.get('endpoint', 'N/A')}<br>
     <b>Type:</b> {v.get('type', 'N/A')}<br>
@@ -322,7 +322,7 @@ def generate_html_report(data):
     <b>Detection Method:</b> {v.get('detection_method', 'N/A')}<br>
     <b>Testing Recommendation:</b> {v.get('testing_recommendation', 'N/A')}
     </div>
-    """ for v in data.get('gemini_hidden_endpoints', []))}
+    """ for v in data.get('groq_hidden_endpoints', []))}
     </div>
 
     </body>
@@ -368,11 +368,11 @@ def generate_json_report(data):
             "ssrf_findings": len(data.get("ssrf", [])),
             "dom_xss": len(data.get("dom_xss", [])),
             "information_leakage": len(data.get("information_leakage", [])),
-            "gemini_endpoint_analysis": len(data.get("gemini_endpoint_analysis", [])),
-            "gemini_stored_xss": len(data.get("gemini_stored_xss", [])),
-            "gemini_file_uploads": len(data.get("gemini_file_uploads", [])),
-            "gemini_attack_chains": len(data.get("gemini_attack_chains", [])),
-            "gemini_hidden_endpoints": len(data.get("gemini_hidden_endpoints", []))
+            "groq_endpoint_analysis": len(data.get("groq_endpoint_analysis", [])),
+            "groq_stored_xss": len(data.get("groq_stored_xss", [])),
+            "groq_file_uploads": len(data.get("groq_file_uploads", [])),
+            "groq_attack_chains": len(data.get("groq_attack_chains", [])),
+            "groq_hidden_endpoints": len(data.get("groq_hidden_endpoints", []))
         },
         "findings": {
             "xss_vulnerabilities": data.get("xss_vulnerabilities", []),
@@ -388,12 +388,12 @@ def generate_json_report(data):
             "security_header_issues": data.get("security_header_issues", []),
             "cookie_issues": data.get("cookie_issues", [])
         },
-        "gemini_ai_findings": {
-            "endpoint_analysis": data.get("gemini_endpoint_analysis", []),
-            "stored_xss_hotspots": data.get("gemini_stored_xss", []),
-            "file_upload_analysis": data.get("gemini_file_uploads", []),
-            "attack_chains": data.get("gemini_attack_chains", []),
-            "hidden_endpoints": data.get("gemini_hidden_endpoints", [])
+        "groq_ai_findings": {
+            "endpoint_analysis": data.get("groq_endpoint_analysis", []),
+            "stored_xss_hotspots": data.get("groq_stored_xss", []),
+            "file_upload_analysis": data.get("groq_file_uploads", []),
+            "attack_chains": data.get("groq_attack_chains", []),
+            "hidden_endpoints": data.get("groq_hidden_endpoints", [])
         },
         "discovery": {
             "links_found": data.get("links_found", []),

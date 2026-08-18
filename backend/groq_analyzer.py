@@ -1,7 +1,7 @@
 """
-Gemini AI Integration - Intelligent Vulnerability Detection & Analysis
+Groq AI Integration - Intelligent Vulnerability Detection & Analysis
 
-Uses Google Gemini API (google.genai) for:
+Uses the Groq API (groq SDK, OpenAI-compatible chat completions) for:
 1. Smart payload generation based on endpoint context
 2. Intelligent response analysis
 3. Vulnerability pattern recognition
@@ -9,29 +9,39 @@ Uses Google Gemini API (google.genai) for:
 5. Workflow chaining detection
 """
 
-import google.genai as genai
+from groq import Groq
 import logging
 import json
+import os
 import re
 import time
 from typing import List, Dict, Any, Optional
+
+# Load backend/.env by absolute path so the key is picked up no matter the CWD
+# (repo root or backend/) or entry point (CLI, API, direct pipeline import).
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+except Exception:
+    pass
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class GeminiAnalyzer:
+class GroqAnalyzer:
     """
-    Leverages Google Gemini AI for intelligent vulnerability detection.
-    Uses the new google.genai SDK.
+    Leverages Groq-hosted LLMs for intelligent vulnerability detection.
+    Uses the official ``groq`` SDK.
     """
-    
+
     # Model fallback chain - try in order until one works
     AVAILABLE_MODELS = [
-        'gemini-2.0-flash',       # Latest, fastest
-        'gemini-2.0-flash-lite',  # Lightweight option
-        'gemini-1.5-flash',       # Proven stable performer
-        'gemini-1.5-pro',         # Heavier model if needed
+        'openai/gpt-oss-120b',      # Strongest general reasoning
+        'openai/gpt-oss-20b',       # Faster/cheaper fallback
+        'qwen/qwen3.6-27b',         # Alternate family
+        'llama-3.3-70b-versatile',  # Only on keys where Llama is served
     ]
     
     # Global rate limiting
@@ -41,19 +51,19 @@ class GeminiAnalyzer:
     
     def is_rate_limited(self) -> bool:
         """Check if we're currently rate limited."""
-        return time.time() < GeminiAnalyzer._rate_limited_until
+        return time.time() < GroqAnalyzer._rate_limited_until
     
     def mark_rate_limited(self, duration: int = 600):
         """Mark as rate limited for the specified duration (default 10 minutes)."""
-        GeminiAnalyzer._rate_limited_until = time.time() + duration
+        GroqAnalyzer._rate_limited_until = time.time() + duration
         logger.warning(f"[!] Marked as rate limited for {duration} seconds")
     
     def __init__(self, api_key: str = None):
         """
-        Initialize Gemini with API key and model selection using new google.genai SDK.
-        
+        Initialize Groq with API key and model selection using the groq SDK.
+
         Args:
-            api_key: Google Gemini API key. If None, reads from GEMINI_API_KEY env var
+            api_key: Groq API key. If None, reads from GROQ_API_KEY env var
         """
         self.client = None
         self.model = None
@@ -64,40 +74,43 @@ class GeminiAnalyzer:
             key = api_key
         else:
             import os
-            key = os.getenv("GEMINI_API_KEY")
+            key = os.getenv("GROQ_API_KEY")
             if not key:
-                logger.warning("[!] GEMINI_API_KEY not set. Gemini features disabled.")
+                logger.warning("[!] GROQ_API_KEY not set. Groq features disabled.")
                 return
         
-        # Initialize client with the new SDK
+        # Initialize client with the Groq SDK
         try:
-            self.client = genai.Client(api_key=key)
-            logger.debug("[+] Gemini client initialized")
+            self.client = Groq(api_key=key)
+            logger.debug("[+] Groq client initialized")
         except Exception as e:
-            logger.error(f"[-] Failed to initialize Gemini client: {str(e)}")
+            logger.error(f"[-] Failed to initialize Groq client: {str(e)}")
             return
         
-        # Try to find an available model
+        # Pick the first model the account can actually serve. Listing is cheap
+        # and avoids burning a generation call on a decommissioned model id.
+        try:
+            served = {m.id for m in self.client.models.list().data}
+        except Exception as e:
+            logger.debug(f"[-] Model listing failed ({str(e)}); using preferred model")
+            served = set()
+
         for model_name in self.AVAILABLE_MODELS:
-            try:
-                logger.debug(f"[*] Testing model: {model_name}")
-                # In new SDK, we don't need to test the model during init
-                # Just store it and test on first use
-                self.model = model_name
-                self.model_name = model_name
-                logger.info(f"[+] Selected model: {model_name}")
-                return
-            except Exception as e:
-                logger.debug(f"[-] Model {model_name} test failed: {str(e)}")
+            if served and model_name not in served:
+                logger.debug(f"[-] Model {model_name} not served for this key")
                 continue
-        
+            self.model = model_name
+            self.model_name = model_name
+            logger.info(f"[+] Selected model: {model_name}")
+            return
+
         logger.warning("[!] No suitable model selected")
         self.model = self.AVAILABLE_MODELS[0]  # Use first as fallback
         self.model_name = self.AVAILABLE_MODELS[0]
         logger.info(f"[+] Using fallback model: {self.model_name}")
     
     def is_available(self) -> bool:
-        """Check if Gemini is configured and available."""
+        """Check if Groq is configured and available."""
         return self.client is not None and self.model is not None
     
     def _safe_generate(self, prompt: str, max_retries: int = 5) -> Optional[str]:
@@ -105,7 +118,7 @@ class GeminiAnalyzer:
         Safely generate content with retry logic for rate limiting.
         
         Args:
-            prompt: The prompt to send to Gemini
+            prompt: The prompt to send to Groq
             max_retries: Number of retries on failure
             
         Returns:
@@ -116,41 +129,39 @@ class GeminiAnalyzer:
         
         # Enforce minimum interval between API calls
         current_time = time.time()
-        time_since_last_call = current_time - GeminiAnalyzer._last_call_time
-        if time_since_last_call < GeminiAnalyzer._min_call_interval:
-            sleep_time = GeminiAnalyzer._min_call_interval - time_since_last_call
+        time_since_last_call = current_time - GroqAnalyzer._last_call_time
+        if time_since_last_call < GroqAnalyzer._min_call_interval:
+            sleep_time = GroqAnalyzer._min_call_interval - time_since_last_call
             logger.debug(f"[*] Enforcing minimum API call interval, sleeping {sleep_time:.1f}s")
             time.sleep(sleep_time)
         
         for attempt in range(max_retries + 1):
             try:
-                GeminiAnalyzer._last_call_time = time.time()  # Update last call time
-                # Use the new google.genai SDK API
-                response = self.client.models.generate_content(
+                GroqAnalyzer._last_call_time = time.time()  # Update last call time
+                # Groq exposes an OpenAI-compatible chat completions API
+                response = self.client.chat.completions.create(
                     model=self.model_name,
-                    contents=prompt,
-                    config={
-                        "temperature": 0.7,
-                        "max_output_tokens": 2048,
-                        "safety_settings": [
-                            {
-                                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                                "threshold": "BLOCK_NONE"
-                            },
-                            {
-                                "category": "HARM_CATEGORY_HARASSMENT",
-                                "threshold": "BLOCK_NONE"
-                            }
-                        ]
-                    }
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a web application security analyst. "
+                                "Answer only with the JSON structure requested, no prose."
+                            ),
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.7,
+                    max_tokens=2048,
                 )
-                
-                if not response or not response.text:
-                    logger.debug(f"[!] Empty response from Gemini")
+
+                text = response.choices[0].message.content if response.choices else None
+                if not text:
+                    logger.debug(f"[!] Empty response from Groq")
                     return None
-                
-                return response.text
-                
+
+                return text
+
             except Exception as e:
                 error_str = str(e)
                 
@@ -179,15 +190,62 @@ class GeminiAnalyzer:
                 
                 # Handle other errors
                 else:
-                    logger.error(f"[!] Gemini error: {error_str}")
+                    logger.error(f"[!] Groq error: {error_str}")
                     return None
-        
+
         return None
-    
-    def analyze_endpoint(self, endpoint: str, method: str = "GET", 
+
+    def chat_with_tools(self, messages, tools=None, tool_choice="auto",
+                        max_tokens: int = 1024, max_retries: int = 3):
+        """One tool-calling turn for the agentic loop.
+
+        Sends ``messages`` (the running conversation) plus the ``tools`` schema
+        and returns the raw assistant message object — which may carry
+        ``tool_calls`` for the loop to execute, or final ``content``.  Shares the
+        same rate-limit interval and 429/503 backoff as :meth:`_safe_generate`.
+        Returns ``None`` if unavailable or all retries fail.
+        """
+        if not self.is_available():
+            return None
+
+        current_time = time.time()
+        gap = current_time - GroqAnalyzer._last_call_time
+        if gap < GroqAnalyzer._min_call_interval:
+            time.sleep(GroqAnalyzer._min_call_interval - gap)
+
+        for attempt in range(max_retries + 1):
+            try:
+                GroqAnalyzer._last_call_time = time.time()
+                kwargs = dict(model=self.model_name, messages=messages,
+                              temperature=0.3, max_tokens=max_tokens)
+                if tools:
+                    kwargs["tools"] = tools
+                    kwargs["tool_choice"] = tool_choice
+                response = self.client.chat.completions.create(**kwargs)
+                return response.choices[0].message if response.choices else None
+            except Exception as e:
+                error_str = str(e)
+                retriable = (
+                    "429" in error_str or "rate limit" in error_str.lower()
+                    or "quota" in error_str.lower() or "503" in error_str
+                    or "service unavailable" in error_str.lower()
+                )
+                if retriable and attempt < max_retries:
+                    wait_time = (2 ** attempt) * 10
+                    logger.warning(f"[!] Groq busy ({error_str[:60]}). Waiting {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue
+                if "429" in error_str:
+                    self.mark_rate_limited()
+                logger.error(f"[!] Groq tool call error: {error_str}")
+                return None
+
+        return None
+
+    def analyze_endpoint(self, endpoint: str, method: str = "GET",
                         parameters: List[str] = None, response_sample: str = None) -> Dict:
         """
-        Use Gemini to analyze an endpoint and suggest attacks.
+        Use Groq to analyze an endpoint and suggest attacks.
         
         Args:
             endpoint: URL/endpoint path
@@ -199,7 +257,7 @@ class GeminiAnalyzer:
             Analysis with suggested vulnerabilities and payloads
         """
         if not self.is_available():
-            return {"error": "Gemini not available"}
+            return {"error": "Groq not available"}
         
         params_str = ", ".join(parameters) if parameters else "none"
         
@@ -234,27 +292,27 @@ class GeminiAnalyzer:
         try:
             text = self._safe_generate(prompt)
             if not text:
-                return {"error": "Gemini unavailable or rate limited"}
+                return {"error": "Groq unavailable or rate limited"}
             
             # Extract JSON from response
             json_match = re.search(r'\{.*\}', text, re.DOTALL)
             
             if json_match:
                 analysis = json.loads(json_match.group())
-                logger.info(f"[+] Gemini analyzed endpoint: {endpoint}")
+                logger.info(f"[+] Groq analyzed endpoint: {endpoint}")
                 return analysis
             else:
-                logger.warning(f"[!] Could not extract JSON from Gemini response")
+                logger.warning(f"[!] Could not extract JSON from Groq response")
                 return {"raw_analysis": text}
         
         except Exception as e:
-            logger.error(f"[-] Gemini analysis error: {str(e)}")
+            logger.error(f"[-] Groq analysis error: {str(e)}")
             return {"error": str(e)}
     
     def generate_smart_payloads(self, endpoint: str, parameter: str, 
                                response_context: str = None) -> List[str]:
         """
-        Generate smart, context-aware payloads using Gemini.
+        Generate smart, context-aware payloads using Groq.
         
         Not just generic injection - tailored to the endpoint.
         """
@@ -304,7 +362,7 @@ class GeminiAnalyzer:
         """
         Compare and analyze multiple responses to find vulnerabilities.
         
-        Uses Gemini to intelligently detect subtle differences.
+        Uses Groq to intelligently detect subtle differences.
         """
         if not self.is_available():
             return {}
@@ -360,7 +418,7 @@ class GeminiAnalyzer:
     def detect_stored_xss_hotspots(self, forms: List[Dict], 
                                    pages_data: List[Dict]) -> List[Dict]:
         """
-        Use Gemini to identify where form inputs might be stored and reflected.
+        Use Groq to identify where form inputs might be stored and reflected.
         
         Detects stored XSS by analyzing form-to-display patterns.
         """
@@ -480,7 +538,7 @@ class GeminiAnalyzer:
     def detect_workflow_chains(self, crawled_urls: List[str], 
                               discovered_apis: List[str]) -> List[Dict]:
         """
-        Use Gemini to detect multi-step attack chains.
+        Use Groq to detect multi-step attack chains.
         
         Example: Form submission → Data storage → Admin display → Exploitation
         """
@@ -543,7 +601,7 @@ class GeminiAnalyzer:
     
     def generate_recommendations(self, vulnerabilities: List[Dict]) -> List[str]:
         """
-        Generate actionable security recommendations using Gemini.
+        Generate actionable security recommendations using Groq.
         """
         if not self.is_available():
             return []
@@ -589,7 +647,7 @@ class GeminiAnalyzer:
     
     def identify_hidden_endpoints(self, js_content: List[str]) -> List[str]:
         """
-        Use Gemini to identify hidden or forgotten endpoints from JS.
+        Use Groq to identify hidden or forgotten endpoints from JS.
         
         More intelligent than regex - understands context.
         """

@@ -2,7 +2,7 @@
 
 > A learning-grade web application security scanner that pairs **classical
 > deterministic detection** (regex/signature/differential analysis) with an
-> **LLM reasoning layer** (Google Gemini) wired into a **RAG pipeline**.
+> **LLM reasoning layer** (Groq) wired into a **RAG pipeline**.
 > Built to demonstrate how AI is applied to security analysis — and where AI
 > should *not* be trusted blindly.
 
@@ -14,7 +14,7 @@ the [Interview crib sheet](#-interview-crib-sheet) at the bottom is your one-pag
 summary.
 
 📐 **Companion doc:** [`ARCHITECTURE.md`](ARCHITECTURE.md) holds the diagrams —
-system context, both engines, the 11-stage pipeline with data shapes, the AI/RAG
+system context, the one pipeline with data shapes, the AI/RAG
 data-flow, and the module dependency map. This README is the words; that file is
 the pictures. Together they are the only two docs in the repo.
 
@@ -23,7 +23,7 @@ the pictures. Together they are the only two docs in the repo.
 ## 📑 Table of contents
 
 1. [What problem it solves](#-what-problem-it-solves)
-2. [The two engines](#-the-two-engines-legacy-vs-pipeline)
+2. [One pipeline, three presets](#-one-pipeline-three-presets--the-detector-library)
 3. [The AI-security story (read this for the interview)](#-the-ai-security-story)
 4. [How a scan actually runs (end-to-end)](#-how-a-scan-actually-runs)
 5. [The analysis pipeline, stage by stage](#-the-analysis-pipeline-stage-by-stage)
@@ -53,7 +53,7 @@ DSG_Suite's thesis: **combine both worlds.**
 | Layer | What it's good at | Files |
 |-------|-------------------|-------|
 | **Deterministic scanners** | High-precision, evidence-backed findings (SQLi error signatures, reflected XSS in executable context, IDOR via response diff) | `payload_tester.py`, `idor_scanner.py`, `authorization_scanner.py`, `response_analyzer.py`, `api_parameter_mutator.py` |
-| **AI reasoning layer** | Context/logic flaws, attack-chain synthesis, hidden-endpoint discovery, smart parameter guessing | `gemini_analyzer.py`, `gemini_param_generator.py`, `pipeline/llm_analysis.py` |
+| **AI reasoning layer** | Context/logic flaws, attack-chain synthesis, hidden-endpoint discovery, smart parameter guessing | `groq_analyzer.py`, `groq_param_generator.py`, `pipeline/llm_analysis.py` |
 
 The AI **augments** the scan; it never **gates** it. Pull the API key and the
 whole suite still runs on deterministic heuristics — a property proven in CI.
@@ -64,71 +64,105 @@ pentest platform.
 
 ---
 
-## 🧭 The engines (legacy · pipeline · combined)
+## 🧭 One pipeline, three presets (+ the detector library)
 
-The repo contains **two independent scan engines** plus a **combined adapter**
-that merges them. Knowing which is which prevents confusion when reading the code.
+There is now **one** engine — a single `Pipeline` — exposed through three presets.
+The old monolithic `scan_url()` and the separate "combined" adapter are gone: their
+active detectors were folded into the pipeline as the **active-testing stage**
+(§4). The specialized detector modules live on as a **library** the pipeline calls.
 
-### 1. Legacy scanner — `scanner.scan_url()`
-The original monolithic scan. One big function crawls the site, fans out every
-specialized scanner per page, runs async injection testing, layers on the
-authorization/IDOR modules, then calls Gemini for AI findings, and finally emits
-HTML + JSON reports. It is feature-rich but sequential, hard to test, and depends
-heavily on the live Gemini service for its "AI" findings.
+| Preset | Entry | Collection | Active payloads | Browser verify |
+|--------|-------|-----------|-----------------|----------------|
+| **Lightweight** | `run_pipeline` · `/scan/pipeline` | `requests` | no | no |
+| **Active** | `scan_url` · `/scan` | `requests` | **yes** | no |
+| **Full** | `run_agentic` · `/scan/agentic` · `--agentic` | **browser** | **yes** | **yes** |
 
-```
-scan_url(url)
- → find_subdomains → crawl_links (BFS, depth 3, ≤100 links)
- → for each page: scan_page → {forms, csrf, dom_xss, js_endpoints, headers, cookies}
- → dir_bruteforce → test_open_redirect / test_ssrf
- → asyncio.run(run_async_scan(pages))        # concurrent XSS/SQLi, 300s budget
- → scan_idor / scan_authorization / scan_api_parameters / scan_response_anomalies
- → Gemini: endpoint analysis, stored-XSS hotspots, uploads, attack chains, hidden endpoints
- → generate_html_report + generate_json_report + save_json
-```
+### 1. The detector library — `payload_tester.py`, `idor_scanner.py`, …
+The deep active detectors — context-aware XSS + 4-family SQLi (`payload_tester`),
+numeric-ID IDOR (`idor_scanner`), multi-role authz (`authorization_scanner`),
+parameter/response analysis, SSRF/open-redirect — are standalone modules. They
+used to be wired together by the monolithic `scan_url`; now the pipeline's
+active-testing stage ([`active.py`](backend/pipeline/active.py)) drives them over
+the targets it already discovered. Same detection, no separate orchestrator.
 
-### 2. Staged analysis pipeline — `pipeline/` (recommended)
-A modular, **dependency-injected** re-implementation. Each stage is a discrete,
-unit-tested module. Network fetch and the LLM are **injected**, so the entire
-pipeline runs in tests against an in-memory site with **no network and no API
-key**. This is the path covered by the test suite and CI, and the one to show off.
-
-```
-URL → Crawler → Endpoint discovery → JS extraction → Unminify/unbundle
-    → Chunk/context gen → RAG (TF-IDF) → LLM analysis (Gemini OR heuristics)
-    → Normalization → Deduplication → Validation → JSON/HTML report
-```
-
-### 3. Combined engine — `combined_scan.run_combined()`
-The two engines are strong in opposite halves: the **pipeline** has excellent
-*plumbing* (DI, RAG, `normalize → dedup → validate → report`) but shallow
-detectors; the **legacy** engine has deep *active* detectors (payload-confirmed
-XSS/SQLi, multi-role authz, active IDOR) but no finding hygiene. The combined
-adapter runs both and funnels **every** finding through the pipeline's shared
-backbone, so they converge on one canonical `Finding` stream and one report.
+### 2. Unified analysis pipeline — `pipeline/orchestrator.py` (recommended)
+A modular, **dependency-injected** pipeline whose **deterministic** stages retrieve
+and shape the client-side data, and whose single **AI** stage reasons over it.
+Collection and the LLM are **injected**, so the whole thing runs in tests against
+an in-memory site with **no network, no browser and no API key** — the path CI
+covers.
 
 ```
-   pipeline findings ─┐
-                      ├─▶ normalize ─▶ dedup ─▶ validate ─▶ ONE unified report
-   legacy findings  ──┘        (cross-engine corroboration: an active-confirmed
-                               finding + an LLM-reasoned one on the same
-                               fingerprint merge and get confidence-boosted)
+URL → Scope → Collect (browser│requests) → Evidence shaping (redacted "forms")
+    → Chunk + RAG (TF-IDF) → Analyze (bounded Groq agent OR heuristics)
+    → Normalize → Deduplicate → Validate → [Verify in browser] → report (+ dashboard)
 ```
 
-Why it's *better* than either alone: when a regex-confirmed SQLi and an LLM
-"this endpoint looks injectable" land on the same fingerprint, [`dedup.py`](backend/pipeline/dedup.py)
-merges them and bumps confidence to `high` — active detection **corroborating**
-passive reasoning. The report's `engines` block shows each engine's contribution
-and how many findings were corroborated across both.
+Everything left of *Analyze* is deterministic data retrieval/processing; the agent
+is just the stage that consumes the shaped corpus. **Browser-vs-requests**,
+**agent-vs-heuristic**, **active testing** and **verification** are config toggles,
+so the same class serves all three presets.
 
-> **Tactical costs (documented, by design):** the two engines crawl
-> independently, so a combined run fetches the target twice; the legacy half
-> needs a live target and is best-effort (failures degrade to pipeline-only). The
-> *strategic* version — making the legacy detectors injected pipeline stages that
-> share one crawl — is the natural next step; this adapter keeps both
-> orchestrators intact for a low-risk, contained change.
+### 3. Active-testing stage — `active.py` (`active_testing` on)
+Where the classic detectors run **inside** the pipeline. Instead of a separate
+engine with its own crawl, the stage takes the endpoints and forms the pipeline
+already discovered (in scope, non-destructive) and confirms exploitable ones:
 
-All three are reachable from the Flask API and CLI (see [Install & run](#-install--run)).
+```
+evidence.endpoints / forms ─▶ ActiveTester ─▶ raw findings (source="active")
+   in-scope · non-destructive     │             → normalize → dedup → validate
+                                  ├─ Reflected XSS / SQLi   (payload_tester)
+                                  ├─ IDOR                   (idor_scanner)
+                                  └─ SSRF / Open redirect   (localhost/off-site probe)
+```
+
+Because the findings share the backbone, an actively-confirmed SQLi and the
+agent's "this endpoint looks injectable" merge on one fingerprint and
+[`dedup.py`](backend/pipeline/dedup.py) bumps confidence to `high` — active
+detection **corroborating** passive reasoning, now in one engine and one crawl.
+The detector callables are injected, so the stage is unit-tested offline; it sends
+real payloads so it is opt-in (on for the `/scan` and `/scan/agentic` presets).
+
+### 4. The full client-side preset — browser + agent + active + verification
+
+The same `Pipeline`, run with `prefer_browser` and `verify_findings` on
+(`run_agentic` / `/scan/agentic` / `--agentic`). Deterministic collection and
+shaping on the left, a bounded agent in the middle, and an autonomous browser
+**confirmation** stage at the end.
+
+* **Playwright** renders each in-scope page (executing its JS), so it sees the
+  *real* client-side surface — post-render DOM, actual loaded JS bodies, network/XHR
+  traffic, cookies and `localStorage`/`sessionStorage` — things a plain `requests`
+  fetch can never observe (a JS-injected link, an XHR). No browser? It degrades to
+  the `requests` collector (DOM only).
+* [`evidence.py`](backend/pipeline/evidence.py) deterministically shapes captures
+  into compact, typed **inventories** (endpoints, forms, DOM sinks, network map,
+  storage, security headers, secrets) — the form best handed to a model — and emits
+  deterministic *baseline findings* (facts).
+* A bounded **Groq tool-agent** ([`agent/`](backend/pipeline/agent/)) reasons over
+  the RAG corpus + evidence with **read-only** tools (`rag_search`, `get_evidence`,
+  `read_source`) and reports what it can ground; findings corroborate the baseline
+  through the same `dedup`. No key → heuristic fallback.
+* **Autonomous verification** ([`verify.py`](backend/pipeline/verify.py)) then
+  *confirms* XSS-class candidates by driving Playwright with a **benign canary**: if
+  the marker executes in a real page the finding is promoted to `confidence=high`
+  with a PoC URL (`verified: true`); if not it is kept but flagged unconfirmed.
+
+**The boundary is first-class** ([`scope.py`](backend/pipeline/scope.py),
+[`redaction.py`](backend/pipeline/redaction.py), agent budgets):
+
+| Control | Enforced by | Behavior |
+|---|---|---|
+| Scope allowlist | `scope.is_in_scope` | Only in-scope hosts/paths are navigated or probed |
+| Read-only / non-destructive | `scope.is_destructive`, browser route-abort | Never fires state-changing (POST/PUT/PATCH/DELETE) requests or submits; verification uses benign GET canaries only |
+| Resource budgets | `agent/loop.py` + config | Caps agent steps, tool calls, rate and wall-clock |
+| Secret redaction | `redaction.redact` | Tokens/keys/cookies/PII stripped **before** anything reaches Groq |
+
+Output is the usual `findings.json`/`report.html` **plus a self-contained
+`reports/dashboard.html`** showing findings (with ✓ verified badges), the collected
+evidence, the network map and the agent's reasoning trace.
+
+All of these are reachable from the Flask API and CLI (see [Install & run](#-install--run)).
 
 ---
 
@@ -155,11 +189,11 @@ smaller hallucination surface. This is textbook RAG applied to source-code
 security review.
 
 ### 2. Two distinct roles for the LLM
-- **LLM as analyst/reasoner** (`gemini_analyzer.py`): infers endpoint purpose,
+- **LLM as analyst/reasoner** (`groq_analyzer.py`): infers endpoint purpose,
   reasons about IDOR/authorization/logic flaws, predicts stored-XSS hotspots,
   and **synthesizes multi-step attack chains** ("submit form → stored → rendered
   in admin panel → XSS fires against an admin"). This is reasoning a regex cannot do.
-- **LLM as offensive input generator** (`gemini_param_generator.py`,
+- **LLM as offensive input generator** (`groq_param_generator.py`,
   `async_scanner.generate_parameters`): when a URL exposes no parameters, the
   model *predicts likely parameter names* to fuzz — AI-augmented content
   discovery that beats a static wordlist.
@@ -168,11 +202,11 @@ security review.
 Every LLM path checks `is_available()` / `is_rate_limited()` and falls back:
 - No API key → `pipeline/llm_analysis.py` runs deterministic RAG-driven regex
   detectors instead, so the pipeline **always** produces findings.
-- `gemini_param_generator` falls back to `DEFAULT_COMMON_PARAMS`.
-- The legacy scanner simply skips its Gemini stages.
+- `groq_param_generator` falls back to `DEFAULT_COMMON_PARAMS`.
+- The legacy scanner simply skips its Groq stages.
 
 Set `DSG_USE_LLM=0` to force the offline path. CI runs this way to stay
-deterministic. Findings are **tagged by source** (`gemini-rag` vs
+deterministic. Findings are **tagged by source** (`groq-rag` vs
 `heuristic-rag`) so a reviewer can weigh probabilistic vs deterministic evidence.
 
 ### 4. Defensive handling of untrusted model output
@@ -209,7 +243,7 @@ The deterministic engine is engineered for **precision**, not just recall:
 - **Prompt-injection / trusting model output as attack input.** `generate_parameters`
   feeds LLM-produced strings straight into HTTP requests without validation. A
   hostile page could, in principle, influence what the scanner requests.
-- **Safety-filter suppression.** `gemini_analyzer._safe_generate` sets
+- **Safety-filter suppression.** `groq_analyzer._safe_generate` sets
   `HARM_CATEGORY_DANGEROUS_CONTENT`/`HARASSMENT` to `BLOCK_NONE` because exploit
   text trips content filters — a legitimate offensive-security need, but a
   deliberate loosening of the model's guardrails worth calling out.
@@ -226,12 +260,12 @@ The deterministic engine is engineered for **precision**, not just recall:
 ### Via the pipeline (recommended)
 ```python
 from pipeline import Pipeline, PipelineConfig
-from gemini_analyzer import GeminiAnalyzer
+from groq_analyzer import GroqAnalyzer
 
-gemini = GeminiAnalyzer()
+groq = GroqAnalyzer()
 result = Pipeline(
     config=PipelineConfig.from_env(),
-    gemini=gemini if gemini.is_available() else None,   # injected, optional
+    groq=groq if groq.is_available() else None,   # injected, optional
 ).run("https://demo.testfire.net")
 
 print(result["summary"])              # per-severity counts
@@ -243,13 +277,23 @@ print(result["normalized_findings"])  # flat canonical findings
 report generator **plus** `normalized_findings`, `rejected_findings`, and
 `stages_run`.
 
-### Via the combined engine (both engines, one report)
+### Via the active preset (adds live XSS/SQLi/IDOR/SSRF testing)
 ```python
-from scanner import scan_url_combined
-result = scan_url_combined("https://demo.testfire.net")
-print(result["engines"])              # {pipeline_findings, legacy_findings, combined_unique, corroborated}
-print(result["normalized_findings"])  # merged + deduplicated across both engines
+from scanner import scan_url
+result = scan_url("https://demo.testfire.net")  # requests + active-testing stage
+print(result["summary"])                        # findings bucketed by type
+print(result["xss_vulnerabilities"], result["ssrf"])
 ```
+
+### Via the agentic client-side engine (browser + agent)
+```python
+from scanner import scan_url_agentic
+result = scan_url_agentic("https://demo.testfire.net")
+print(result["summary"])                 # deduped findings across baseline + agent
+print(result["reports"]["dashboard"])    # reports/dashboard.html (evidence + agent trace)
+```
+Needs a browser for the full path: `playwright install chromium` (one-time). Without
+it, the engine degrades to a `requests`-based collector automatically.
 
 ### Via the Flask API
 ```bash
@@ -257,12 +301,13 @@ python backend/app.py                      # Flask on :5000
 curl -X POST localhost:5000/scan/pipeline \
      -H 'Content-Type: application/json' \
      -d '{"url":"https://demo.testfire.net"}'
-# or /scan/combined for the merged report from both engines
+# /scan = active preset (payload testing) · /scan/agentic = browser + agent + verify
 ```
 
-### Via the CLI (legacy engine)
+### Via the CLI
 ```bash
-python backend/app.py https://demo.testfire.net
+python backend/app.py https://demo.testfire.net             # active preset (payload testing)
+python backend/app.py --agentic https://demo.testfire.net   # agentic client-side engine
 ```
 
 ### Via the frontend
@@ -280,20 +325,21 @@ dataclasses live in `models.py`; env-overridable knobs in `config.py`.
 
 | # | Stage | Module | What it does | Key technique |
 |---|-------|--------|--------------|---------------|
-| 1 | **Crawler** | `crawler.py` | BFS, same-domain, from a start URL | FIFO queue of `(url, depth)`; injected `fetch`; BeautifulSoup link extraction |
-| 2 | **Endpoint discovery** | `endpoint_discovery.py` | Crawled URLs + JS-mined paths → unique `Endpoint`s with method+params | `parse_qsl` param extraction; `/api/`, `/v\d+/`, `/graphql`, `/rest/` regexes |
-| 3 | **JS extraction** | `js_extraction.py` | Collect external `<script src>` (fetched, deduped) + inline scripts; mine endpoint paths | BeautifulSoup + regex mining |
-| 4 | **Unminify/unbundle** | `unminify.py` | Beautify JS; split webpack bundles into per-module units | `jsbeautifier` (optional) or regex fallback; `(\d+)\s*:\s*function\s*\(` module split |
-| 5 | **Chunk/context gen** | `chunking.py` | Break assets/pages/endpoints into overlapping windows | Sliding window, `step = size - overlap` |
-| 6 | **RAG** | `rag.py` | Retrieve top-k relevant chunks per query | Pure-Python **TF-IDF + cosine similarity**, smoothed IDF |
-| 7 | **LLM analysis** | `llm_analysis.py` | Per vuln class: query → retrieve → analyze (Gemini or heuristics) | RAG + duck-typed LLM; regex detectors as fallback/safety-net |
-| 8 | **Normalization** | `normalization.py` | Map any detector dict → canonical `Finding` | Priority-ordered key picking; severity aliasing; fingerprinting |
-| 9 | **Deduplication** | `dedup.py` | Merge same-fingerprint findings; boost corroborated confidence | SHA1 fingerprint (type+url+param); source-set union |
-| 10 | **Validation** | `validation.py` | Drop invalid/low-confidence; keep rejects with reasons | Structural gate + optional confidence threshold |
-| 11 | **Reporting** | `reporting.py` | Build payload; write `findings.json`; best-effort legacy HTML/JSON | Type→bucket mapping; severity rollups |
+| 1 | **Scope** | `scope.py` | Host allowlist + read-only boundary from the seed URL | Root-domain match ± subdomains; destructive-action regex |
+| 2 | **Collect** | `collectors/` | Render each in-scope page → `PageCapture` (DOM, JS bodies, network, storage, forms) | Playwright (real JS runtime) or injected `requests` fallback |
+| 3 | **Evidence shaping** | `evidence.py` | Captures → typed, **redacted** inventories + deterministic baseline facts | Reuses endpoint/JS mining; sink/secret/network/cookie shaping; `redaction.py` |
+| 4 | **Chunk + RAG** | `unminify.py` · `chunking.py` · `rag.py` | Beautify JS, window into overlapping chunks, index redacted corpus + evidence | Sliding window; pure-Python **TF-IDF + cosine** |
+| 5 | **Analyze** | `agent/` · `llm_analysis.py` | Bounded Groq tool-agent reasons over the corpus; heuristic detectors as fallback | ReAct tool-loop with step/tool/time budgets; read-only tools |
+| 6 | **Normalization** | `normalization.py` | Map any detector dict → canonical `Finding` | Priority-ordered key picking; severity aliasing; fingerprinting |
+| 7 | **Deduplication** | `dedup.py` | Merge same-fingerprint findings; boost corroborated confidence | SHA1 fingerprint (type+url+param); source-set union |
+| 5b | **Active testing** *(opt-in)* | `active.py` | Send real payloads to in-scope targets: reflected XSS/SQLi/IDOR/SSRF/redirect | Drives the detector library (`payload_tester`, `idor_scanner`) over evidence targets |
+| 8 | **Validation** | `validation.py` | Drop invalid/low-confidence; keep rejects with reasons | Structural gate + optional confidence threshold |
+| 9 | **Verify** *(opt-in)* | `verify.py` | Confirm XSS-class findings by driving a browser with a benign canary | Marker/`alert` detection → `verified` + PoC, `confidence=high` |
+| 10 | **Reporting** | `reporting.py` · `dashboard.py` | Build payload; write `findings.json`, legacy HTML/JSON, and `dashboard.html` | Type→bucket mapping; severity rollups; self-contained HTML |
 
-**Design principles:** dependency injection (fetch + LLM injected), offline by
-default (heuristics when Gemini is absent), no heavy ML deps (pure-Python RAG).
+**Design principles:** dependency injection (collection + LLM + verification probe
+injected), offline by default (heuristics when Groq is absent), no heavy ML deps
+(pure-Python RAG).
 
 ---
 
@@ -315,7 +361,7 @@ default (heuristics when Gemini is absent), no heavy ML deps (pure-Python RAG).
 | **Directory / file exposure** | Forced browsing against a small dir wordlist | `scanner.py::dir_bruteforce` |
 | **JS endpoint disclosure** | Regex-mine `/api/`, `/v1/`, `/v2/` paths from inline + external JS | `js_endpoint_extractor.py` |
 | **Hardcoded secrets / insecure transport** | Regex for `api_key`/`Bearer`/AWS `AKIA…`; `http://` URLs in client JS | `pipeline/llm_analysis.py` detectors |
-| **Attack chains, stored-XSS hotspots, hidden endpoints, upload risks** | LLM reasoning over structure/JS | `gemini_analyzer.py` |
+| **Attack chains, stored-XSS hotspots, hidden endpoints, upload risks** | LLM reasoning over structure/JS | `groq_analyzer.py` |
 
 ---
 
@@ -325,10 +371,9 @@ default (heuristics when Gemini is absent), no heavy ML deps (pure-Python RAG).
 
 | File | Purpose |
 |------|---------|
-| **`app.py`** | Flask API + CLI entry. Routes: `POST /scan` (legacy, flattens findings into a `vulnerabilities[]` list with per-category severities + summary), `POST /scan/pipeline` (staged pipeline), `POST /scan/combined` (both engines merged), `GET /reports/<file>` (serve reports), `GET /history` (list past JSON reports), `GET /` (health). `run_cli()` prints a summary when invoked with a URL arg. |
-| **`scanner.py`** | Legacy orchestrator. `scan_url()` is the master pipeline (crawl → per-page scan → dir brute → redirect/SSRF → async XSS/SQLi → authz/IDOR modules → Gemini → report). Also hosts `scan_url_pipeline()` (bridge to the pipeline) and `scan_url_combined()` (bridge to the combined engine), the BFS `crawl_links`, scope helpers (`is_same_domain` — note: naive last-two-labels logic, breaks on `co.uk`), `analyze_security_headers`, `analyze_cookies`, `test_open_redirect`, `test_ssrf`, `dir_bruteforce`, `detect_sensitive_data`, and the `scan_*_with_gemini` wrappers. |
-| **`combined_scan.py`** | The combined-engine adapter. `run_combined()` runs the pipeline + legacy `scan_url()`, tags each finding's `source`/`engine`, and funnels both through `normalize → dedup → validate → reporting` into one report. `legacy_raw_findings()` flattens a legacy result dict into raw findings with a canonical `type` (aligned to the pipeline vocabulary so fingerprints collide and corroborate). Adds an `engines` breakdown to the payload. Offline-capable via `run_legacy=False` + injected `fetch`. |
-| **`async_scanner.py`** | Concurrent injection engine. `run_async_scan(links)` uses `aiohttp` + `asyncio.gather` to test all URLs for XSS/SQLi in parallel. Per-URL worker extracts params or, if none, calls the **Gemini param generator** (falls back to `DEFAULT_COMMON_PARAMS`). Blocking `requests`-based detectors are offloaded via `asyncio.to_thread`. Includes UA rotation + jitter + `Semaphore(5)` as light WAF/rate-limit evasion. Feeds `xss_vulnerabilities`/`sql_vulnerabilities`. |
+| **`app.py`** | Flask API + CLI entry. Routes: `POST /scan` (active preset, flattens findings into a `vulnerabilities[]` list with per-category severities + summary), `POST /scan/pipeline` (lightweight), `POST /scan/agentic` (browser + agent + verify), `GET /reports/<file>`, `GET /history`, `GET /` (health). `run_cli()` prints a summary; `--agentic` selects the full preset. |
+| **`scanner.py`** | Thin entry points over the one pipeline: `scan_url()` (active preset — requests + active testing), `scan_url_pipeline()` (lightweight), `scan_url_agentic()` (browser + agent + active + verify). The old monolithic orchestrator and `combined_scan.py` were folded into the pipeline. |
+| **`async_scanner.py`** | Concurrent injection engine. `run_async_scan(links)` uses `aiohttp` + `asyncio.gather` to test all URLs for XSS/SQLi in parallel. Per-URL worker extracts params or, if none, calls the **Groq param generator** (falls back to `DEFAULT_COMMON_PARAMS`). Blocking `requests`-based detectors are offloaded via `asyncio.to_thread`. Includes UA rotation + jitter + `Semaphore(5)` as light WAF/rate-limit evasion. Feeds `xss_vulnerabilities`/`sql_vulnerabilities`. |
 | **`payload_tester.py`** | **The real XSS/SQLi detection engine** (the `.txt` payload files are just reference corpora). Context-aware XSS (`CANARY`, `determine_contexts`, `is_safe_html_encoding`, `is_executable_context`, `test_xss`) and four-family SQLi (`test_sql`, `test_time_sql`, `test_error_sql`, `test_sqli`) with heavy false-positive-reduction. Exports the shared `session` + `HEADERS` used across the codebase. |
 | **`form_scanner.py`** | Discovers `<form>`s, extracts `<input>/<textarea>/<select>`, and tests them **method-aware** (POST forms get POST-body injection — which the URL-only async scanner can't do). Returns per-form `{xss, sql}`. |
 | **`csrf_scanner.py`** | Multi-vector CSRF: missing token, JSON-CSRF (active probe), CORS `*`+credentials (Critical), SameSite gaps, login CSRF, AJAX-without-token. |
@@ -338,9 +383,9 @@ default (heuristics when Gemini is absent), no heavy ML deps (pure-Python RAG).
 | **`authorization_scanner.py`** | RBAC / broken-access-control. Classifies endpoints by role pattern, tests unauthenticated access, **cross-role access comparison**, missing-authorization, and HTTP-method-override bypass. |
 | **`idor_scanner.py`** | IDOR scanner. Extracts numeric IDs (query + path), mutates them, and flags "same status + different sensitive content"; also cross-user IDOR (user A's response leaking user B's identifiers). |
 | **`session_manager.py`** | Stateful multi-identity layer that makes authz/IDOR/workflow testing possible. Manages named `requests.Session`s, registers users/roles, `login()` (captures cookies + auto-extracts JWT/API tokens), and `request_with_context()` (the primitive every scanner calls; logs `request_history` for attack-chain reconstruction). |
-| **`gemini_analyzer.py`** | **The AI reasoning engine.** `GeminiAnalyzer` wraps `google.genai`. Model fallback chain (`gemini-2.0-flash` → `-flash-lite` → `1.5-flash` → `1.5-pro`); `_safe_generate` enforces a 2s min interval, exponential backoff on 429/503, a class-wide 10-min rate-limit cooldown, and disables safety filters. Analysis methods: `analyze_endpoint`, `generate_smart_payloads`, `analyze_responses`, `detect_stored_xss_hotspots`, `analyze_file_upload_risks`, `detect_workflow_chains`, `identify_hidden_endpoints`, `generate_recommendations`. Each prompts for strict JSON and recovers it via regex. |
-| **`gemini_param_generator.py`** | AI-assisted parameter discovery. `generate_parameters_with_gemini` (cached, context-built from form fields + JS endpoints, dynamic model listing) with `DEFAULT_COMMON_PARAMS` fallback. `generate_parameters` unions defaults + form names + URL params + AI suggestions (guaranteed superset). |
-| **`report_generator.py`** | Renders findings to HTML + JSON in `reports/`. Dedicated purple "Gemini AI Analysis" block keeps AI-derived findings visually separate from deterministic ones; JSON keeps a separate `gemini_ai_findings` object. `sanitize_filename` for report names. ⚠️ Builds HTML via f-strings without output escaping. |
+| **`groq_analyzer.py`** | **The AI reasoning engine.** `GroqAnalyzer` wraps the `groq` SDK (OpenAI-compatible chat completions). Model fallback chain (`openai/gpt-oss-120b` → `openai/gpt-oss-20b` → `qwen/qwen3.6-27b` → `llama-3.3-70b-versatile`), filtered against the models the key can actually serve; `_safe_generate` enforces a 2s min interval, exponential backoff on 429/503, and a class-wide 10-min rate-limit cooldown. Analysis methods: `analyze_endpoint`, `generate_smart_payloads`, `analyze_responses`, `detect_stored_xss_hotspots`, `analyze_file_upload_risks`, `detect_workflow_chains`, `identify_hidden_endpoints`, `generate_recommendations`. Each prompts for strict JSON and recovers it via regex. |
+| **`groq_param_generator.py`** | AI-assisted parameter discovery. `generate_parameters_with_groq` (cached, context-built from form fields + JS endpoints, dynamic model listing) with `DEFAULT_COMMON_PARAMS` fallback. `generate_parameters` unions defaults + form names + URL params + AI suggestions (guaranteed superset). |
+| **`report_generator.py`** | Renders findings to HTML + JSON in `reports/`. Dedicated purple "Groq AI Analysis" block keeps AI-derived findings visually separate from deterministic ones; JSON keeps a separate `groq_ai_findings` object. `sanitize_filename` for report names. ⚠️ Builds HTML via f-strings without output escaping. |
 | **`js_endpoint_extractor.py`** | Legacy JS endpoint miner (`/api/`, `/v1/`, `/v2/` from inline + external scripts). |
 | **`payloads/xss_payloads.txt`** | Four canonical reflected-XSS vectors (reference corpus; runtime uses `ADVANCED_XSS_PAYLOADS` in code). |
 | **`payloads/sql_payloads.txt`** | Five classic SQLi strings (reference corpus; runtime uses the richer in-code sets). |
@@ -349,8 +394,8 @@ default (heuristics when Gemini is absent), no heavy ML deps (pure-Python RAG).
 
 | File | Purpose |
 |------|---------|
-| **`__init__.py`** | Package surface. Exports `Pipeline`, `PipelineConfig`, `run_pipeline`, and models. |
-| **`orchestrator.py`** | `Pipeline` class — chains all 11 stages; injects `fetch` and `gemini`; tracks `stages_run`. `run_pipeline()` convenience entry. |
+| **`__init__.py`** | Package surface. Exports `Pipeline`, `PipelineConfig`, `run_pipeline`, `run_agentic`, and models. |
+| **`orchestrator.py`** | The one `Pipeline` — chains scope→collect→evidence→rag→analyze→backbone→[verify]→report; injects `collector`/`fetch`, `groq`, `probe`; tracks `stages_run`. `run_pipeline()` (lightweight) and `run_agentic()` (browser+verify) presets. |
 | **`models.py`** | Shared dataclasses `Endpoint`, `JSAsset`, `Chunk`, `Finding` + `SEVERITY_ORDER`. `Finding.compute_fingerprint()` = SHA1 of `type|normalized_url|parameter` (dedup identity). |
 | **`config.py`** | `PipelineConfig` dataclass + `from_env()` reading `DSG_*` env vars. |
 | **`crawler.py`** | Stage 1 — injected-fetch BFS crawl, same-domain, `max_depth`/`max_links` bounded. |
@@ -359,11 +404,26 @@ default (heuristics when Gemini is absent), no heavy ML deps (pure-Python RAG).
 | **`unminify.py`** | Stage 4 — beautify + webpack unbundle; conservative regex fallback if `jsbeautifier` absent. |
 | **`chunking.py`** | Stage 5 — overlapping windows over JS/HTML/endpoints; overlap preserves cross-boundary context. |
 | **`rag.py`** | Stage 6 — `TfidfRetriever` (fit/query/retrieve); smoothed IDF; cosine similarity; pure Python. |
-| **`llm_analysis.py`** | Stage 7 — `DETECTORS` catalog (DOM XSS, Hardcoded Secret, Insecure Transport, Potential IDOR); Gemini path + heuristic fallback/safety-net; tags source `gemini-rag`/`heuristic-rag`. |
+| **`llm_analysis.py`** | Stage 7 — `DETECTORS` catalog (DOM XSS, Hardcoded Secret, Insecure Transport, Potential IDOR); Groq path + heuristic fallback/safety-net; tags source `groq-rag`/`heuristic-rag`. |
 | **`normalization.py`** | Stage 8 — coerce heterogeneous dicts → canonical `Finding`; severity aliasing. |
 | **`dedup.py`** | Stage 9 — fingerprint merge; keep strongest severity/confidence; corroboration bump. |
 | **`validation.py`** | Stage 10 — structural gate + optional low-confidence drop; returns `(accepted, rejected)`. |
-| **`reporting.py`** | Stage 11 — build payload; write `findings.json`; best-effort legacy HTML/JSON. |
+| **`reporting.py`** | Stage 11 — build payload; write `findings.json`; best-effort legacy HTML/JSON. Carries `evidence`/`agent_trace`/`network_map` for the agentic dashboard. |
+
+#### Client-side stages — `backend/pipeline/`
+
+| File | Purpose |
+|------|---------|
+| **`scope.py`** | The scope/read-only boundary. `Scope.from_seed()` (host allowlist ± subdomains, `max_pages`), `is_in_scope()`, `is_destructive()`. |
+| **`redaction.py`** | Secret/PII redaction applied before anything reaches the model. `redact()`, `redact_obj()`, `scan_secrets()` (reports *that* a secret exists, not its value). |
+| **`collectors/base.py`** | `PageCapture` model + `RequestsCollector` (offline/degraded, injected `fetch`) + `StaticCollector` (tests) + `default_collector()`. |
+| **`collectors/browser.py`** | `PlaywrightCollector` — headless Chromium: post-render DOM, JS bodies, network log, cookies, storage, console. Lazily imported; `available()` gates fallback. Read-only route-abort + in-scope-only navigation enforced here. |
+| **`evidence.py`** | Deterministic shaping of captures → typed inventories (`endpoints`, `forms`, `dom_sinks`, `network_map`, `storage`, `security_headers`, `secrets`); `baseline_findings()` (deterministic facts) and `to_chunks()` (evidence → RAG). |
+| **`agent/tools.py`** | Read-only tool schemas + `ToolContext` dispatcher (`rag_search`, `get_evidence`, `read_source`, `list_sources`, `report_finding`). No browser-control tools. |
+| **`agent/loop.py`** | `AgenticAnalyzer` — bounded Groq tool-loop; enforces step/tool/wall-clock budgets; heuristic fallback + safety-net; returns `(findings, trace)`. |
+| **`active.py`** | Active-testing stage. `ActiveTester` drives the detector library (`payload_tester` XSS/SQLi, `idor_scanner`, SSRF/redirect probes) over in-scope, non-destructive evidence targets → `source="active"`; detectors injected for offline tests; opt-in + `active_max_targets` cap. |
+| **`verify.py`** | Autonomous browser verification. `verify_findings()` drives Playwright with a benign canary to confirm XSS-class findings (→ `verified` + PoC, `confidence=high`); injectable `probe` for offline tests; in-scope/read-only. |
+| **`dashboard.py`** | Self-contained `reports/dashboard.html` (inline CSS, HTML-escaped): findings (with ✓ verified badges) + evidence inventories + network map + agent trace. |
 
 ### Frontend — `frontend/` (Next.js 14, App Router)
 
@@ -383,11 +443,11 @@ suite. Fully offline & deterministic via `conftest.py`:
 - **Injected fetcher**: an in-memory `SITE` dict maps URLs → `(status, ct, body)`,
   seeded with one of each detectable issue (DOM sink, hardcoded key, `http://`
   URL, IDOR-shaped endpoints).
-- **Fake LLM** (`FakeGemini`): implements `is_available`/`is_rate_limited`/
-  `analyze_endpoint` with canned output; tests also pass `gemini=None` or a
+- **Fake LLM** (`FakeGroq`): implements `is_available`/`is_rate_limited`/
+  `analyze_endpoint` with canned output; tests also pass `groq=None` or a
   `Down` stub to exercise the fallback path.
 - Suites: `test_orchestrator` (stage order + e2e), `test_rag` (retrieval ranking),
-  `test_validation`, `test_llm_analysis` (gemini vs heuristic source tagging),
+  `test_validation`, `test_llm_analysis` (groq vs heuristic source tagging),
   `test_combined` (both-engine merge + **cross-engine corroboration** raising
   confidence), `test_crawler`, `test_endpoint_discovery`, `test_js_extraction`,
   `test_unminify`, `test_chunking`, `test_dedup`, `test_normalization`, `test_reporting`.
@@ -400,11 +460,11 @@ suite. Fully offline & deterministic via `conftest.py`:
 | **`backend/Dockerfile`** | `python:3.12-slim`; installs `requirements.txt` + gunicorn; runs `gunicorn --bind 0.0.0.0:5000 --workers 2 --timeout 600 app:app` (long timeout for slow scans). |
 | **`backend/.dockerignore`** | Excludes `venv/`, `__pycache__`, `reports/`, `*.log`, `tests/`, `.env` (keeps secrets/artifacts out of the image). |
 | **`backend/pytest.ini`** | `testpaths=tests`, quiet mode. |
-| **`backend/requirements.txt`** | Runtime: `flask`, `requests`, `beautifulsoup4`, `aiohttp`, `google-genai`, `urllib3`, `python-dotenv`. |
+| **`backend/requirements.txt`** | Runtime: `flask`, `requests`, `beautifulsoup4`, `aiohttp`, `groq`, `urllib3`, `python-dotenv`. |
 | **`backend/requirements-dev.txt`** | Adds `pytest`, `pytest-cov`, `flake8`, `jsbeautifier`. |
-| **`backend/.env`** | Holds `GEMINI_API_KEY`, proxy vars, OAuth IDs/secrets (not committed values). Loaded via `python-dotenv`. |
+| **`backend/.env`** | Holds `GROQ_API_KEY`, proxy vars, OAuth IDs/secrets (not committed values). Loaded via `python-dotenv`. |
 | **`backend/reports/`** | Output directory for generated HTML/JSON reports + `findings.json` (auto-created at runtime; starts empty). |
-| **`ARCHITECTURE.md`** (repo root) | The companion doc — diagrams of both engines, the pipeline, and the AI data-flow. |
+| **`ARCHITECTURE.md`** (repo root) | The companion doc — diagrams of the pipeline, its presets, the active/verify stages, and the AI data-flow. |
 
 ---
 
@@ -418,13 +478,19 @@ python3 -m venv venv && source venv/bin/activate
 pip install -U pip setuptools wheel
 pip install -r backend/requirements.txt
 
-# 3. (optional) Gemini key — omit to run fully offline
-echo "GEMINI_API_KEY=your_key_here" >> backend/.env
+# 2b. (optional) browser for the agentic engine — omit to use the requests fallback
+playwright install chromium
 
-# 4a. CLI scan (legacy engine)
+# 3. (optional) Groq key from https://console.groq.com/keys — omit to run fully offline
+echo "GROQ_API_KEY=your_key_here" >> backend/.env
+
+# 4a. CLI scan (active preset — requests + payload testing)
 python backend/app.py https://demo.testfire.net
 
-# 4b. API server + pipeline endpoint
+# 4b. Agentic client-side scan (browser + agent + dashboard.html)
+python backend/app.py --agentic https://demo.testfire.net
+
+# 4c. API server + pipeline endpoint
 python backend/app.py
 curl -X POST localhost:5000/scan/pipeline \
      -H 'Content-Type: application/json' \
@@ -453,10 +519,27 @@ All pipeline knobs are env-overridable (`PipelineConfig.from_env`):
 | `DSG_CHUNK_SIZE` | 1200 | Chunk size (chars) |
 | `DSG_CHUNK_OVERLAP` | 150 | Chunk overlap (chars) |
 | `DSG_TOP_K` | 6 | RAG retrieval depth |
-| `DSG_USE_LLM` | 1 | Use Gemini when available (0 = force offline) |
+| `DSG_USE_LLM` | 1 | Use Groq when available (0 = force offline) |
 | `DSG_DROP_LOW_CONFIDENCE` | 0 | Drop low-confidence findings |
 
-Plus `GEMINI_API_KEY` for the LLM layer.
+Agentic-engine boundary & budgets (also `from_env`):
+
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `DSG_PREFER_BROWSER` | 0 | Use Playwright (base preset = requests; `run_agentic` forces it on) |
+| `DSG_VERIFY` | 0 | Autonomously confirm XSS-class findings in a browser (on for `run_agentic`) |
+| `DSG_ACTIVE` | 0 | Active payload testing: reflected XSS/SQLi/IDOR/SSRF/redirect (on for `/scan` + `run_agentic`) |
+| `DSG_ACTIVE_MAX` | 15 | Cap on endpoints/forms actively probed |
+| `DSG_READ_ONLY` | 1 | Never fire state-changing requests/submits |
+| `DSG_ALLOW_SUBDOMAINS` | 0 | Widen scope from the seed host to its root domain |
+| `DSG_MAX_PAGES` | 40 | Scope cap on pages collected |
+| `DSG_NAV_TIMEOUT` | 15 | Per-page browser navigation timeout (s) |
+| `DSG_REDACT` | 1 | Strip secrets before anything reaches the model |
+| `DSG_MAX_AGENT_STEPS` | 8 | Model turns in the agent loop |
+| `DSG_MAX_TOOL_CALLS` | 20 | Total tool invocations per scan |
+| `DSG_AGENT_TIME_BUDGET` | 120 | Wall-clock cap for the agent loop (s) |
+
+Plus `GROQ_API_KEY` for the LLM layer.
 
 ---
 
@@ -511,7 +594,7 @@ Being able to critique your own tool is a strong interview signal. The real ones
   budget can truncate large-site results.
 - **Duplication/drift**: subdomain + directory logic exist both as modules and as
   inline copies in `scanner.py`; the inline copies are the ones that run. The two
-  Gemini integrations use different model lists and logging styles.
+  Groq integrations use different model lists and logging styles.
 - **Naive param parsing** in the async scanner (`split("?")`/`split("=")` instead
   of `parse_qsl`).
 
@@ -519,8 +602,8 @@ Being able to critique your own tool is a strong interview signal. The real ones
 - **LLM output is trusted as attack input** (`generate_parameters` → HTTP requests)
   without validation — a prompt-injection surface.
 - **Safety filters are disabled** (`BLOCK_NONE`) for offensive context.
-- **Non-deterministic findings** (`temperature=0.7`); heavy dependence on the live
-  Gemini service and its rate limits for the legacy engine's AI findings.
+- **Non-deterministic findings** (`temperature=0.7`); the agent stage depends on the
+  live Groq service and its rate limits (heuristics cover the offline path).
 - **`report_generator.py` doesn't escape HTML** — self-XSS-able report.
 
 **Frontend**
@@ -532,16 +615,18 @@ Being able to critique your own tool is a strong interview signal. The real ones
 ## 🎤 Interview crib sheet
 
 One-paragraph pitch:
-> *DSG_Suite is a web vulnerability scanner with two engines: a classical
-> deterministic scanner and a staged, dependency-injected RAG pipeline. The
-> pipeline crawls a site, extracts and unminifies JavaScript, chunks it with
-> overlap, retrieves the most relevant chunks per vulnerability class using a
-> pure-Python TF-IDF cosine retriever, and hands them to Google Gemini for
-> reasoning — or to deterministic regex detectors when the LLM is unavailable.
-> Heterogeneous findings are normalized to one schema, deduplicated by
-> fingerprint with corroboration-based confidence, and passed through a validation
-> gate before reporting. AI augments but never gates the scan, and the whole
-> pipeline runs offline in CI with an injected fetcher and a fake LLM.*
+> *DSG_Suite is a client-side-first web vulnerability scanner built as one
+> dependency-injected pipeline. Deterministic stages drive a real browser
+> (Playwright) to capture the rendered DOM, loaded JavaScript, network traffic and
+> storage, then shape that into redacted, typed "evidence forms" and index them
+> with a pure-Python TF-IDF retriever. A bounded Groq tool-agent reasons over that
+> corpus (or deterministic heuristics when there's no key); an opt-in active stage
+> confirms exploitable bugs with real payloads (XSS/SQLi/IDOR/SSRF); and an opt-in
+> browser stage verifies XSS with a benign canary. Every finding flows through one
+> normalize → dedup → validate backbone, deduplicated by fingerprint with
+> corroboration-based confidence. A scope/read-only/budget/redaction boundary keeps
+> it safe, and the whole thing runs offline in CI with injected collection and a
+> fake LLM.*
 
 Six things to be ready to defend:
 1. **Why RAG here?** Minified bundles are too big for a prompt; retrieval keeps
@@ -555,11 +640,11 @@ Six things to be ready to defend:
    SQLi; corroboration bump on dedup; LLM `confidence` self-rating.
 5. **What are the AI risks?** Trusting model output as attack input (prompt
    injection), disabled safety filters, non-determinism, unescaped report output.
-6. **How do the two engines combine?** `combined_scan.run_combined` funnels both
-   engines' findings through the shared `normalize → dedup → validate → report`
-   backbone; a shared `type|url|param` fingerprint lets an active-confirmed
-   finding and an LLM-reasoned one **merge and boost each other's confidence** —
-   passive triage + active confirmation, scored by cross-engine consensus.
+6. **How do active and agent findings combine?** They're stages of one pipeline,
+   so both flow through the shared `normalize → dedup → validate → report` backbone;
+   a shared `type|url|param` fingerprint lets an active-confirmed finding and an
+   agent-reasoned one **merge and boost each other's confidence** — passive triage +
+   active confirmation, scored by consensus, in a single crawl.
 
 ---
 

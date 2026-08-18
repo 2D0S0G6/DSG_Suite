@@ -2,7 +2,11 @@ flask
 requests
 beautifulsoup4
 aiohttp
-# Use Google Gemini with modern google.genai SDK
-google-genai
+# Groq LLM layer (OpenAI-compatible chat completions SDK)
+groq
+# Headless-browser collection for the agentic client-side engine.
+# After install run: playwright install chromium
+# Optional at runtime — the engine falls back to a requests-based collector.
+playwright
 urllib3
 python-dotenv

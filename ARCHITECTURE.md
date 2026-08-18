@@ -16,189 +16,208 @@ Who talks to whom.
         ┌──────────────┐        POST /scan            ┌───────────────────────────┐
         │  Next.js UI  │  ───────────────────────────▶│      Flask API (app.py)   │
         │ (frontend/)  │        POST /scan/pipeline   │  /scan · /scan/pipeline   │
-        │  :3000       │◀───────────────────────────  │  /scan/combined           │
+        │  :3000       │◀───────────────────────────  │  /scan/agentic            │
         └──────────────┘        JSON findings         │  /history · /reports/<f>  │
                                                        └────────────┬──────────────┘
-                                                                    │
-                                        ┌───────────────────────────┼───────────────────────────┐
+                                                                    │  preset = config toggles
+                                                                    ▼
+                                                       ┌────────────────────────────┐
+                                                       │   pipeline/Pipeline.run     │
+                                                       │  Scope→Collect→Evidence→RAG │
+                                                       │  →Analyze→[Active]→backbone │
+                                                       │  →[Verify]→report           │
+                                                       └───────┬────────────┬────────┘
+                                        ┌──────────────────────┘            └──────────────────┐
                                         ▼                                                       ▼
                              ┌─────────────────────┐                            ┌────────────────────────┐
-                             │  LEGACY ENGINE      │                            │  PIPELINE ENGINE       │
-                             │  scanner.scan_url() │                            │  pipeline/Pipeline.run │
-                             └──────────┬──────────┘                            └───────────┬────────────┘
-                                        │                                                   │
-                                        ▼                                                   ▼
-                             ┌─────────────────────┐                            ┌────────────────────────┐
-                             │  Target web app     │                            │  Google Gemini (LLM)   │
-                             │  (HTTP via requests)│                            │  OR offline heuristics │
+                             │  Target web app     │  browser (Playwright)      │  Groq (LLM)            │
+                             │  or requests        │  · detector library        │  OR offline heuristics │
                              └─────────────────────┘                            └────────────────────────┘
                                         │                                                   │
                                         └──────────────────► reports/ ◀─────────────────────┘
-                                                    report.html · report.json · findings.json
+                                            report.html · report.json · findings.json · dashboard.html
 ```
 
-The LLM box is **optional** on both sides: pull `GEMINI_API_KEY` and the legacy
-engine skips its Gemini stages while the pipeline swaps in deterministic regex
-detectors. Findings are tagged by `source` so you can tell which layer produced them.
+The LLM box is **optional**: pull `GROQ_API_KEY` and the analyze stage swaps the
+agent for deterministic heuristics. Findings are tagged by `source`
+(`agentic` · `evidence` · `active` · `heuristic-rag`) so you can tell which layer
+produced them.
 
 ---
 
-## 2. The two engines at a glance
+## 2. One pipeline, three presets
 
 ```
-                       ┌───────────────────────────── DSG_Suite ─────────────────────────────┐
-                       │                                                                      │
-   LEGACY (monolithic) │   scanner.scan_url()                                                 │
-   ─────────────────── │   crawl → per-page scan → async XSS/SQLi → authz/IDOR → Gemini →     │
-   feature-rich,       │   report_generator (HTML + JSON)                                     │
-   sequential,         │                                                                      │
-   LLM-dependent       │                                                                      │
-                       │                                                                      │
-   PIPELINE (staged)   │   pipeline.Pipeline.run()                                            │
-   ─────────────────── │   11 injected, unit-tested stages · offline-capable · CI-covered     │
-   recommended,        │   URL → … → RAG → LLM/heuristics → normalize → dedup → validate →    │
-   testable,           │   report                                                             │
-   deterministic       │                                                                      │
-                       │                                                                      │
-   COMBINED (adapter)  │   combined_scan.run_combined()                                       │
-   ─────────────────── │   runs BOTH, merges every finding through the shared backbone →      │
-   best of both:       │   normalize → dedup (cross-engine corroboration) → validate → report │
-   depth + hygiene     │                                                                      │
-                       └──────────────────────────────────────────────────────────────────────┘
+                    ┌───────────────────────────── DSG_Suite ─────────────────────────────┐
+                    │                    pipeline.Pipeline.run()                           │
+                    │   Scope → Collect → Evidence → RAG → Analyze → [Active] → backbone   │
+                    │           → [Verify] → report      (all stages injected/testable)    │
+                    ├──────────────────────────────────────────────────────────────────────┤
+  LIGHTWEIGHT       │   run_pipeline · /scan/pipeline    requests · no payloads · no browser│
+  ACTIVE            │   scan_url     · /scan             requests · + active payload testing│
+  FULL              │   run_agentic  · /scan/agentic     browser · + active + verification  │
+                    └──────────────────────────────────────────────────────────────────────┘
 ```
 
-All three are reachable from `app.py` (`/scan` = legacy, `/scan/pipeline` =
-pipeline, `/scan/combined` = both merged) and share low-level helpers
-(`payload_tester.session`, `report_generator`, the pipeline `Finding` model).
+Presets are just `PipelineConfig` toggles (`prefer_browser`, `active_testing`,
+`verify_findings`). The old monolithic `scan_url` and `combined_scan` are gone —
+folded into the pipeline. The specialized detectors remain as a **library** the
+active stage calls.
 
 ---
 
-## 3. Legacy engine — `scan_url()` control flow
+## 3. The detector library (driven by the active stage)
+
+The deep active detectors are standalone modules; the pipeline's active-testing
+stage ([`active.py`](backend/pipeline/active.py)) drives them over the in-scope,
+non-destructive endpoints/forms the pipeline already discovered — one crawl, no
+separate orchestrator.
 
 ```
-scan_url(url)
-│
-├─ find_subdomains(url)                 # inline HTTP brute (api/dev/test/staging)
-├─ crawl_links(url)                     # BFS, MAX_DEPTH=3, MAX_LINKS=100, same-domain
-│
-├─ for each page:  scan_page(page) ─────┬─ scan_forms()          (form XSS/SQLi, method-aware)
-│                                       ├─ scan_csrf()           (token/CORS/SameSite/login/AJAX)
-│                                       ├─ scan_dom_xss()        (source→sink taint)
-│                                       ├─ extract_js_endpoints()(regex /api /v1 /v2)
-│                                       ├─ analyze_security_headers()
-│                                       └─ analyze_cookies()
-│
-├─ dir_bruteforce(url)                  # forced browsing (COMMON_DIRS)
-├─ test_open_redirect() / test_ssrf()   # reflection-based, per page
-│
-├─ asyncio.run(run_async_scan(pages))   # concurrent XSS/SQLi (aiohttp), 300s budget
-│      └─ per URL: params OR gemini_param_generator → payload_tester.test_xss/test_sqli
-│
-├─ scan_idor_vulnerabilities()          ┐
-├─ scan_authorization_flaws()           │  session-aware, differential-analysis
-├─ scan_api_parameters()                │  modules (need SessionManager for multi-role)
-├─ scan_response_anomalies()            ┘
-│
-├─ if Gemini available & not rate-limited:
-│      scan_with_gemini_endpoint_analysis()   ┐
-│      scan_stored_xss_with_gemini()          │  LLM as analyst:
-│      scan_file_uploads_with_gemini()        │  reasoning, hotspots,
-│      detect_workflow_chains_with_gemini()   │  attack chains,
-│      identify_hidden_endpoints_with_gemini()┘  hidden endpoints
-│
-└─ generate_html_report() + generate_json_report() + save_json()
+evidence.endpoints / forms ──▶ ActiveTester.run() ──▶ raw findings (source="active")
+     (in-scope, non-destructive)      │
+                                      ├─ payload_tester.test_xss / test_sqli   (reflected XSS · 4-family SQLi)
+                                      ├─ idor_scanner.IDORScanner.test_idor    (numeric-ID mutation + diff)
+                                      └─ ssrf / open-redirect probes           (localhost / off-site reflection)
 ```
+
+Still available as a library (not yet wired into the active stage): `form_scanner`,
+`csrf_scanner`, `authorization_scanner`, `api_parameter_mutator`, `response_analyzer`.
 
 ---
 
-## 4. Pipeline engine — 11 stages with data shapes
+## 4. Pipeline engine — stages with data shapes
 
 ```
                  str (URL)
                     │
-   [1] crawler.py ──┴──────────────▶  List[str]  (same-domain URLs, BFS)
+   [1] scope.py     ────────────────▶ Scope            (host allowlist, read-only, max_pages)
                     │
-   [3] js_extraction.py ────────────▶ List[JSAsset]   (external + inline <script>)
-                    │  mine_endpoints()
+   [2] collectors/  ────────────────▶ List[PageCapture] (DOM · JS bodies · network · storage · forms)
+                    │                                    (Playwright | requests fallback)
+   [3] evidence.py  ────────────────▶ Evidence          (typed, REDACTED inventories)
+                    │  baseline_findings()               + List[dict] deterministic "facts"
                     ▼
-   [2] endpoint_discovery.py ───────▶ List[Endpoint]  (url, method, params, source)
+   [4] chunking + unminify + rag ───▶ TfidfRetriever    (redacted DOM/JS + evidence chunks)
                     │
-   [4] unminify.py  ────────────────▶ List[JSAsset]   (beautified, webpack-split)
+   [5] agent/ (loop·tools) ─────────▶ List[dict], trace  (bounded tool-loop → source=agentic)
+                    │        ▲                            (no key → llm_analysis heuristics)
+                    │        └── evidence forms: dom_sinks · endpoints · forms · network_map · secrets
                     │
-   [5] chunking.py  ────────────────▶ List[Chunk]     (overlapping windows: js/html/endpoint)
+   [5b] active.py   ────────────────▶ List[dict]         (opt-in: payloads → source=active)
+                    │  payload_tester · idor_scanner · ssrf/redirect  (in-scope, non-destructive)
                     │
-   [6] rag.py       ────────────────▶ TfidfRetriever  (fit on chunks; query per vuln class)
+   [6] normalization → dedup → validation
+                    │            ────▶ (accepted, rejected)  (canonical · merged · quality-gated)
                     │
-   [7] llm_analysis.py ─────────────▶ List[dict]      (raw findings — gemini-rag OR heuristic-rag)
-                    │        ▲
-                    │        └── DETECTORS: DOM XSS · Hardcoded Secret · Insecure Transport · IDOR
+   [6b] verify.py   ────────────────▶ findings +verified    (opt-in: benign browser canary → PoC)
                     │
-   [8] normalization.py ────────────▶ List[Finding]   (canonical shape + fingerprint)
-                    │
-   [9] dedup.py     ────────────────▶ List[Finding]   (merged; corroboration → confidence↑)
-                    │
-   [10] validation.py ──────────────▶ (accepted, rejected)   (quality gate; rejects kept w/ reason)
-                    │
-   [11] reporting.py ───────────────▶ payload dict → reports/findings.json (+ legacy html/json)
+   [7] reporting.py ────────────────▶ payload → findings.json · report.html · dashboard.html
 ```
 
-> Note the numbering: **JS extraction (3) runs before endpoint discovery (2)** in
-> `orchestrator.py` so paths mined from JavaScript enrich the endpoint set.
+> Deterministic collection + shaping on the left; the agent is the single AI stage;
+> active payload testing and browser verification are optional; then the shared backbone.
 
 ### Injection points (why it's testable)
 ```
-Pipeline(config, fetch, gemini)
-          │       │      └── LLM: real GeminiAnalyzer | FakeGemini | None → heuristics
-          │       └───────── HTTP: real session | in-memory SITE dict (tests)
-          └───────────────── knobs: PipelineConfig.from_env()  (DSG_* env vars)
+Pipeline(config, collector|fetch, groq, probe, active)
+          │       │                │     │      └── active: real detectors | fake tester (tests)
+          │       │                │     └── verify: real browser | fake probe (tests)
+          │       │                └──────── LLM: GroqAnalyzer | FakeGroqAgent | None → heuristics
+          │       └───────────────────────── collect: Playwright | RequestsCollector(fetch=SITE)
+          └───────────────────────────────── knobs: PipelineConfig.from_env()  (DSG_* env vars)
 ```
 
 ---
 
-## 5. Combined engine — merging both (`run_combined`)
+## 5. Corroboration — active + agent findings on one fingerprint
 
-The tactical adapter that gets depth **and** hygiene: run both engines, then push
-every finding through the pipeline's shared backbone so they converge on one
-report with one confidence model.
+There is no separate "combined engine" any more: the active detectors run **as a
+stage** of the one pipeline, so their findings and the agent's share the backbone
+directly. Corroboration falls out for free.
 
 ```
-   ┌─────────────────────────┐   passive/static + RAG-LLM findings
-   │  Pipeline.run(write=0)   │ ─────────────┐   source: heuristic-rag | gemini-rag
-   └─────────────────────────┘              │
-                                            ▼
-                                     ┌──────────────┐
-   ┌─────────────────────────┐       │ normalize    │  heterogeneous dicts → Finding
-   │  scanner.scan_url()      │       │   (shared)   │
-   │  (active, payload-       │ ────▶ ├──────────────┤
-   │   confirmed findings)    │       │ dedup        │  same fingerprint (type|url|param)?
-   └─────────────────────────┘       │   ┌────────┐ │  → merge, keep strongest severity,
-       source: legacy-active         │   │CORROB. │ │    and if sources differ across
-               legacy-gemini         │   │ boost  │ │    engines → confidence = HIGH
-                                     │   └────────┘ │
-                                     ├──────────────┤
-                                     │ validate     │  drop junk; keep rejects w/ reason
-                                     ├──────────────┤
-                                     │ reporting    │  ONE unified findings.json + html
-                                     └──────┬───────┘
-                                            ▼
-                          payload + engines: {pipeline_findings, legacy_findings,
-                                              combined_unique, corroborated}
+   agent / evidence findings ──┐   source: agentic | evidence | heuristic-rag
+                               ├─▶ normalize ─▶ dedup ─▶ validate ─▶ ONE report
+   active-stage findings ──────┘        │  same fingerprint (type|url|param)?
+       source: active                   └─ merge · keep strongest severity ·
+       (payload-confirmed)                 sources differ → confidence = HIGH
 ```
 
-**The value:** an LLM-reasoned "this endpoint looks injectable" (`gemini-rag`) and
-an actively-confirmed SQLi (`legacy-active`) that share a fingerprint collapse
-into **one** finding whose confidence is raised because two independent engines
-agree. Passive triage + active confirmation, scored by consensus.
+**The value:** an agent's "this endpoint looks injectable" (`agentic`) and an
+actively-confirmed SQLi (`active`) that share a fingerprint collapse into **one**
+finding whose confidence is raised because two independent methods agree — passive
+triage + active confirmation, scored by consensus, in a single crawl.
 
-**Offline testability:** `run_combined(run_legacy=False, fetch=<injected>)` runs
-the whole merge path with no network — that's how `test_combined.py` exercises it
-in CI. The legacy half is best-effort; if it errors (needs a live target) the run
-degrades to pipeline-only.
+---
 
-**Known tactical cost:** both engines crawl independently → the target is fetched
-twice. The strategic version makes the legacy detectors *injected pipeline stages*
-sharing one crawl (and lets RAG/LLM triage decide which endpoints get actively
-tested); this adapter keeps both orchestrators intact for a contained change.
+## 5b. Full client-side preset — `Pipeline.run` with browser + verify
+
+This is the **same** `Pipeline` as §4, run with `prefer_browser` + `verify_findings`
+on (`run_agentic`). The guiding split: **data retrieval and processing are
+deterministic; only the analysis is agentic.** A real browser gathers the
+client-side surface, deterministic shaping turns it into typed evidence "forms", a
+bounded Groq tool-agent reasons over that corpus behind a hard boundary, and a
+final browser stage autonomously *confirms* the bugs.
+
+```
+ seed URL
+   │
+   ▼
+┌───────────────┐   scope allowlist + read-only are enforced at the browser edge
+│  Scope        │   (only in-scope hosts navigated; POST/PUT/PATCH/DELETE aborted)
+│  (scope.py)   │
+└──────┬────────┘
+       ▼
+┌──────────────────────────┐   Playwright (headless Chromium) renders each page,
+│  Collector               │   executing its JS → PageCapture per page:
+│  Playwright | requests   │   rendered DOM · JS bodies · network log · cookies ·
+│  (collectors/)           │   localStorage/sessionStorage · console · forms
+└──────┬───────────────────┘   (no browser → requests fallback: DOM only)
+       ▼
+┌──────────────────────────┐   deterministic shaping → compact typed inventories,
+│  Evidence shaping        │   REDACTED (redaction.py) before they can reach a model:
+│  (evidence.py)           │   endpoints · forms · dom_sinks · network_map ·
+│                          │   storage · security_headers · secrets
+│  → baseline_findings()   │   + deterministic "facts" findings (source=evidence)
+└──────┬───────────────────┘
+       ▼
+┌──────────────────────────┐   redacted DOM/JS chunks + evidence chunks
+│  Chunk + RAG (rag.py)    │
+└──────┬───────────────────┘
+       ▼
+┌──────────────────────────┐   bounded ReAct loop over READ-ONLY tools
+│  Agentic analyzer        │   (rag_search · get_evidence · read_source);
+│  (agent/loop.py+tools.py)│   budgets: max_agent_steps · max_tool_calls · wall-clock
+│                          │   report_finding → source=agentic
+│  no key → heuristics     │   empty → heuristic safety-net
+└──────┬───────────────────┘
+       ▼
+   normalize → dedup (agentic ⨝ evidence corroborate) → validate
+       │
+       ▼
+┌──────────────────────────┐   opt-in: drive Playwright with a BENIGN canary to
+│  Verify (verify.py)      │   confirm XSS-class findings. Executes? → verified=true,
+│  in-scope · GET · benign │   confidence=high, PoC url. Else kept, flagged unconfirmed.
+└──────┬───────────────────┘
+       ▼
+   reporting → findings.json + report.html + dashboard.html
+               (findings +✓verified · evidence · network map · agent trace)
+```
+
+**The boundary (four controls):** scope allowlist + read-only (`scope.py`,
+enforced by the browser route-abort — verification probes are in-scope, benign,
+GET-only), resource budgets (`agent/loop.py`), and secret redaction
+(`redaction.py`) applied to every form/chunk *before* Groq.
+
+**Why a browser:** a `requests` fetch sees only server HTML. Playwright sees the
+*runtime* — JS-injected links, XHR/fetch traffic, and `localStorage` tokens — which
+is exactly where modern client-side risk lives.
+
+**Offline testability:** the collector and `groq` are injected. `RequestsCollector`
++ a scripted `FakeGroqAgent` (see `conftest.py`) exercise the whole path — scope
+gating, redaction, shaping, budgets, agent tool-loop, fallback — with no network
+and no browser.
 
 ---
 
@@ -218,12 +237,12 @@ How a single vulnerability class gets analyzed in stage 7.
                                                      │
                              ┌───────────────────────┴───────────────────────┐
                              ▼                                                ▼
-              gemini available?  YES                            gemini available?  NO
+              groq available?  YES                            groq available?  NO
                              │                                                │
         ┌────────────────────▼─────────────────────┐          ┌───────────────▼────────────────┐
-        │ GeminiAnalyzer.analyze_endpoint(context) │          │ regex DETECTORS over same chunks │
+        │ GroqAnalyzer.analyze_endpoint(context)   │          │ regex DETECTORS over same chunks │
         │  → JSON (regex-extracted, schema-coerced)│          │  → deterministic findings        │
-        │  source = "gemini-rag"                   │          │  source = "heuristic-rag"        │
+        │  source = "groq-rag"                     │          │  source = "heuristic-rag"        │
         └────────────────────┬─────────────────────┘          └───────────────┬────────────────┘
                              │   (empty? fall back ─────────────────────────────┘ safety net)
                              ▼
@@ -256,29 +275,32 @@ guarantees output even with no API key. Both feed the same normalization stage.
 ## 8. Module dependency map (backend)
 
 ```
-app.py  (/scan · /scan/pipeline · /scan/combined)
-  ├─ scanner.py ───────────┬─ async_scanner.py ─── payload_tester.py  (XSS/SQLi engine, shared session)
-  │                        │                   └── gemini_param_generator.py  (AI param discovery)
-  │                        ├─ form_scanner.py ───── payload_tester.py
-  │                        ├─ csrf_scanner.py
-  │                        ├─ dom_xss_scanner.py
-  │                        ├─ js_endpoint_extractor.py
-  │                        ├─ idor_scanner.py ─────┐
-  │                        ├─ authorization_scanner.py ─┼─ session_manager.py  (multi-identity)
-  │                        ├─ api_parameter_mutator.py ─┘
-  │                        ├─ response_analyzer.py
-  │                        ├─ gemini_analyzer.py   (LLM reasoning engine)
-  │                        ├─ report_generator.py  (HTML/JSON output)
-  │                        └─ pipeline/  ────────── orchestrator → 11 stage modules
-  │                                                 (models.py · config.py shared)
-  └─ combined_scan.py ─────┬─ pipeline/  (normalize · dedup · validate · reporting — shared backbone)
-                           └─ scanner.scan_url()  (lazy import; legacy active detectors)
+app.py  (/scan · /scan/pipeline · /scan/agentic)
+  └─ scanner.py  (thin presets: scan_url · scan_url_pipeline · scan_url_agentic)
+        └─ pipeline/ ── orchestrator.py = the one Pipeline
+              ├─ scope.py · redaction.py             (boundary)
+              ├─ collectors/ (browser·base)          (Playwright | requests)
+              ├─ evidence.py                         (deterministic shaping)
+              ├─ chunking.py · rag.py · unminify.py  (context prep)
+              ├─ agent/ (loop·tools) ── groq_analyzer.py  (bounded Groq tool-loop)
+              ├─ active.py ──┬─ payload_tester.py    (context XSS · 4-family SQLi)
+              │              ├─ idor_scanner.py ──── session_manager.py
+              │              └─ (ssrf / open-redirect probes)
+              ├─ verify.py                           (browser bug confirmation)
+              ├─ dashboard.py · report_generator.py  (dashboard + legacy HTML/JSON)
+              ├─ models.py · config.py               (shared)
+              └─ normalize · dedup · validate · reporting   (shared backbone)
+
+detector library (standalone; some not yet wired into active.py):
+  form_scanner · csrf_scanner · dom_xss_scanner · authorization_scanner ·
+  api_parameter_mutator · response_analyzer · js_endpoint_extractor · async_scanner
 ```
 
-Note: subdomain and directory brute-forcing live **inline** in `scanner.py`
-(`find_subdomains`, `COMMON_DIRS`) rather than as separate modules. `combined_scan.py`
-depends on both `pipeline` and (lazily) `scanner`; the `pipeline` package has **no**
-back-dependency on legacy code, so it stays self-contained and offline-testable.
+Notes: `scanner.py` is now just three preset wrappers over `Pipeline`; the old
+monolith and `combined_scan.py` are gone. The `pipeline` package has **no**
+back-dependency on `scanner`, so it stays self-contained and offline-testable.
+Playwright is imported lazily inside `collectors/browser.py` (and `verify.py`), so
+`import pipeline` never requires the browser stack.
 
 ---
 
@@ -287,10 +309,12 @@ back-dependency on legacy code, so it stays self-contained and offline-testable.
 ```
   backend/tests/conftest.py
      ├─ SITE dict  (in-memory vulnerable site → injected as `fetch`)
-     └─ FakeGemini (canned LLM → injected as `gemini`)
+     ├─ FakeGroq (canned LLM → injected as `groq`)
+     └─ FakeGroqAgent + RequestsCollector (scripted tool-loop + offline capture)
               │
               ▼
-  one suite per stage  +  test_orchestrator.py (end-to-end, asserts stage order)
+  one suite per stage (scope · redaction · collectors · evidence · agent · active ·
+     verify) + test_orchestrator.py / test_agentic.py (end-to-end, assert stage order)
               │
               ▼
   .github/workflows/ci.yml

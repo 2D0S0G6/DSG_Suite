@@ -40,9 +40,16 @@ def build_payload(
     findings: List[Finding],
     discovery: Dict,
     rejected: List[dict] = None,
+    evidence: Dict = None,
+    agent_trace: List[dict] = None,
+    network_map: Dict = None,
 ) -> Dict:
     """Build a report payload compatible with ``report_generator`` that also
-    carries the flat normalised findings and pipeline metadata."""
+    carries the flat normalised findings and pipeline metadata.
+
+    The agentic engine additionally passes ``evidence`` (the shaped inventories),
+    ``agent_trace`` (the reasoning steps) and ``network_map`` for the dashboard.
+    """
     payload: Dict = {
         "url": url,
         "status_code": status_code,
@@ -74,6 +81,12 @@ def build_payload(
 
     payload["normalized_findings"] = [f.to_dict() for f in findings]
     payload["rejected_findings"] = rejected or []
+    if evidence is not None:
+        payload["evidence"] = evidence
+    if agent_trace is not None:
+        payload["agent_trace"] = agent_trace
+    if network_map is not None:
+        payload["network_map"] = network_map
     payload["summary"] = {
         "total": len(findings),
         "critical": counts.get("critical", 0),

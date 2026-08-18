@@ -2,7 +2,7 @@ import sys
 import os
 import json
 from flask import Flask, request, jsonify, send_from_directory
-from scanner import scan_url, scan_url_pipeline, scan_url_combined
+from scanner import scan_url, scan_url_pipeline, scan_url_agentic
 
 app = Flask(__name__)
 
@@ -132,19 +132,19 @@ def scan_pipeline():
     return jsonify(result)
 
 
-@app.route("/scan/combined", methods=["POST"])
-def scan_combined():
-    """Run both engines and return one unified, deduplicated report.
+@app.route("/scan/agentic", methods=["POST"])
+def scan_agentic():
+    """Run the agentic client-side engine and return its unified report.
 
-    The legacy active detectors and the staged pipeline are merged through the
-    shared normalize -> dedup -> validate -> report backbone, so cross-engine
-    corroboration raises confidence (see combined_scan.py).
+    Deterministic Playwright/requests collection + redacted evidence shaping +
+    RAG, then a bounded Groq tool-agent reasons over the corpus. Also writes
+    reports/dashboard.html (findings + evidence + agent trace).
     """
     data = request.get_json()
     if not data or "url" not in data:
         return jsonify({"error": "Provide URL"}), 400
 
-    result = scan_url_combined(data["url"])
+    result = scan_url_agentic(data["url"])
     return jsonify(result)
 
 
@@ -178,13 +178,32 @@ def history():
 
 def run_cli():
 
-    if len(sys.argv) < 2:
-        print("Usage: python app.py http://target.com")
+    args = [a for a in sys.argv[1:]]
+    if not args or args[0] in ("-h", "--help"):
+        print("Usage: python app.py [--agentic] http://target.com")
         return
 
-    target = sys.argv[1]
+    agentic = "--agentic" in args
+    targets = [a for a in args if not a.startswith("-")]
+    if not targets:
+        print("Usage: python app.py [--agentic] http://target.com")
+        return
+    target = targets[0]
 
     print("\n[+] Target:", target)
+
+    if agentic:
+        print("[*] Engine: agentic client-side (Playwright/requests + Groq agent)")
+        result = scan_url_agentic(target)
+        summary = result.get("summary", {})
+        print("\n====== SUMMARY ======")
+        print("[+] Engine:", result.get("engine"), "| collector:", result.get("collector"))
+        print("[+] Pages collected:", len((result.get("evidence") or {}).get("pages", [])))
+        print("[+] Findings:", summary.get("total", 0),
+              f"(critical {summary.get('critical',0)}, high {summary.get('high',0)}, medium {summary.get('medium',0)})")
+        print("[+] Agent trace steps:", len(result.get("agent_trace", [])))
+        print("\n[+] Dashboard:", (result.get("reports") or {}).get("dashboard", "reports/dashboard.html"), "\n")
+        return
 
     result = scan_url(target)
 

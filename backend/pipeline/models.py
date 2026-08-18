@@ -65,7 +65,7 @@ class Chunk:
 class Finding:
     """A normalised security finding.
 
-    Heterogeneous detector output (regex scanners, Gemini, heuristics) is mapped
+    Heterogeneous detector output (regex scanners, Groq, heuristics) is mapped
     onto this single shape by the normalisation stage so that deduplication,
     validation and reporting can treat everything uniformly.
     """

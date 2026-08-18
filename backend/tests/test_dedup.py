@@ -11,13 +11,13 @@ def test_duplicates_collapse():
 
 def test_merge_keeps_stronger_severity_and_sources():
     a = normalize_one({"type": "XSS", "url": "http://x/a", "severity": "medium", "source": "regex"})
-    b = normalize_one({"type": "XSS", "url": "http://x/a", "severity": "high", "source": "gemini"})
+    b = normalize_one({"type": "XSS", "url": "http://x/a", "severity": "high", "source": "groq"})
     out = dedup.deduplicate([a, b])
     assert len(out) == 1
     assert out[0].severity == "high"
     # corroboration by two distinct sources raises confidence
     assert out[0].confidence == "high"
-    assert set(out[0].metadata["sources"]) == {"regex", "gemini"}
+    assert set(out[0].metadata["sources"]) == {"regex", "groq"}
 
 
 def test_distinct_findings_preserved_and_sorted():

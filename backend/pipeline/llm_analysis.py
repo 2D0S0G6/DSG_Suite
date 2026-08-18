@@ -3,7 +3,7 @@
 For each vulnerability class we phrase a natural-language query, use the RAG
 retriever to pull the most relevant chunks, and analyse them:
 
-* If a Gemini analyzer is available, the retrieved context is sent to it.
+* If a Groq analyzer is available, the retrieved context is sent to it.
 * Otherwise a set of deterministic heuristic detectors run over the same
   retrieved context, so the pipeline (and its tests) yield findings offline with
   no API key.
@@ -75,6 +75,12 @@ def _first_evidence(pattern: str, text: str) -> Optional[str]:
 def _heuristic_findings(detector: Dict[str, Any], chunks: List[Chunk]) -> List[Dict]:
     findings: List[Dict] = []
     for chunk in chunks:
+        # Evidence chunks describe findings (they contain sink names, secret kinds,
+        # etc.) and are meant for the agent's tools — regexing them would flag the
+        # description itself. Skip them here; the deterministic baseline already
+        # turns evidence into findings.
+        if chunk.kind == "evidence":
+            continue
         for pattern in detector["patterns"]:
             evidence = _first_evidence(pattern, chunk.content)
             if evidence:
@@ -94,14 +100,14 @@ def _heuristic_findings(detector: Dict[str, Any], chunks: List[Chunk]) -> List[D
     return findings
 
 
-def _gemini_findings(
-    detector: Dict[str, Any], chunks: List[Chunk], gemini
+def _groq_findings(
+    detector: Dict[str, Any], chunks: List[Chunk], groq
 ) -> List[Dict]:
     context = "\n\n".join(c.content[:800] for c in chunks[:4])
     if not context.strip():
         return []
     try:
-        analysis = gemini.analyze_endpoint(
+        analysis = groq.analyze_endpoint(
             endpoint=chunks[0].source if chunks else "",
             method="GET",
             parameters=[],
@@ -121,7 +127,7 @@ def _gemini_findings(
                 "description": analysis.get("endpoint_purpose", ""),
                 "remediation": detector["remediation"],
                 "confidence": "medium",
-                "source": "gemini-rag",
+                "source": "groq-rag",
             }
         )
     return findings
@@ -129,23 +135,23 @@ def _gemini_findings(
 
 def analyze(
     retriever: TfidfRetriever,
-    gemini=None,
+    groq=None,
     top_k: int = 6,
 ) -> List[Dict]:
     """Run every detector via retrieval-augmented analysis and return raw findings.
 
-    ``gemini`` may be any object exposing ``is_available()`` and
+    ``groq`` may be any object exposing ``is_available()`` and
     ``analyze_endpoint(...)``; when absent or unavailable, heuristics are used.
     """
-    use_gemini = bool(gemini) and getattr(gemini, "is_available", lambda: False)()
+    use_groq = bool(groq) and getattr(groq, "is_available", lambda: False)()
     raw: List[Dict] = []
 
     for detector in DETECTORS:
         relevant = retriever.retrieve(detector["query"], top_k=top_k)
         if not relevant:
             continue
-        if use_gemini:
-            found = _gemini_findings(detector, relevant, gemini)
+        if use_groq:
+            found = _groq_findings(detector, relevant, groq)
             # Heuristics still run as a safety net if the model returns nothing.
             raw.extend(found or _heuristic_findings(detector, relevant))
         else:

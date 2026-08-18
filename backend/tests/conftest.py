@@ -68,8 +68,8 @@ def fetch(site):
     return _fetch
 
 
-class FakeGemini:
-    """Stand-in for GeminiAnalyzer used to test the LLM path without an API."""
+class FakeGroq:
+    """Stand-in for GroqAnalyzer used to test the LLM path without an API."""
 
     def __init__(self, available=True, vulns=None):
         self._available = available
@@ -90,5 +90,75 @@ class FakeGemini:
 
 
 @pytest.fixture
-def fake_gemini():
-    return FakeGemini()
+def fake_groq():
+    return FakeGroq()
+
+
+# --- Agentic-engine fakes ------------------------------------------------------
+import json as _json
+
+
+class _FakeFn:
+    def __init__(self, name, arguments):
+        self.name = name
+        self.arguments = _json.dumps(arguments)
+
+
+class _FakeToolCall:
+    def __init__(self, call_id, name, arguments):
+        self.id = call_id
+        self.type = "function"
+        self.function = _FakeFn(name, arguments)
+
+
+class _FakeMessage:
+    def __init__(self, content="", tool_calls=None):
+        self.content = content
+        self.tool_calls = tool_calls or []
+
+
+def tool_call(call_id, name, **arguments):
+    return _FakeMessage(tool_calls=[_FakeToolCall(call_id, name, arguments)])
+
+
+class FakeGroqAgent(FakeGroq):
+    """A scriptable tool-calling stand-in for the agent loop.
+
+    ``script`` is a list of _FakeMessage turns returned in order by
+    ``chat_with_tools``; once exhausted it returns a bare 'DONE' message.
+    """
+
+    def __init__(self, script=None, available=True):
+        super().__init__(available=available)
+        if script is None:
+            script = [
+                tool_call("c1", "get_evidence", form="dom_sinks"),
+                tool_call(
+                    "c2", "report_finding",
+                    type="DOM XSS", severity="high", url="http://test.local/",
+                    evidence="innerHTML", description="tainted sink", confidence="high",
+                ),
+                _FakeMessage(content="DONE"),
+            ]
+        self._script = script
+        self._i = 0
+
+    def chat_with_tools(self, messages, tools=None, tool_choice="auto", **kw):
+        if self._i >= len(self._script):
+            return _FakeMessage(content="DONE")
+        turn = self._script[self._i]
+        self._i += 1
+        return turn
+
+
+@pytest.fixture
+def fake_agent():
+    return FakeGroqAgent()
+
+
+@pytest.fixture
+def collector(fetch):
+    """A real, offline RequestsCollector over the in-memory SITE."""
+    from pipeline.collectors.base import RequestsCollector
+
+    return RequestsCollector(fetch=fetch)
